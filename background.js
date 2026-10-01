@@ -34,6 +34,13 @@ async function readClipboard() {
   return chrome.runtime.sendMessage({ target: "offscreen", type: "read-clipboard" });
 }
 
+function normUrl(u) {
+  try {
+    const x = new URL(u);
+    return x.hostname.toLowerCase().replace(/^www\./, "") + x.pathname.replace(/\/+$/, "") + x.search + x.hash;
+  } catch { return String(u).trim(); }
+}
+
 // ---------- Wikidata API (uses your logged-in browser session) ----------
 async function api(params, post = false) {
   const body = new URLSearchParams({ format: "json", formatversion: "2", ...params });
@@ -64,8 +71,8 @@ async function addSource(item, siteQid, url) {
 
   // Already there with this exact URL?
   for (const c of sameSite) {
-    const urls = (c.qualifiers?.[P_URL] || []).map(q => q.datavalue?.value);
-    if (urls.includes(url)) return { status: "exists" };
+    const urls = (c.qualifiers?.[P_URL] || []).map(q => normUrl(q.datavalue?.value));
+    if (urls.includes(normUrl(url))) return { status: "exists" };
   }
 
   const token = await getCsrf();
@@ -99,13 +106,22 @@ async function addSource(item, siteQid, url) {
 }
 
 // ---------- UI feedback ----------
-function notify(title, message, ok = true) {
+const LEVELS = {
+  ok:    { color: "#2e7d32", text: "✓", textColor: "#ffffff", ms: 3000 },
+  warn:  { color: "#fbc02d", text: "=", textColor: "#000000", ms: 6000 }, // already present
+  error: { color: "#c62828", text: "!", textColor: "#ffffff", ms: 5000 }
+};
+
+function notify(title, message, level = "ok") {
+  const l = LEVELS[level] || LEVELS.ok;
   chrome.notifications.create({
     type: "basic", iconUrl: "icons/icon128.png", title, message
   });
-  chrome.action.setBadgeBackgroundColor({ color: ok ? "#2e7d32" : "#c62828" });
-  chrome.action.setBadgeText({ text: ok ? "✓" : "!" });
-  setTimeout(() => chrome.action.setBadgeText({ text: "" }), 3000);
+  chrome.action.setBadgeBackgroundColor({ color: l.color });
+  if (chrome.action.setBadgeTextColor) chrome.action.setBadgeTextColor({ color: l.textColor });
+  chrome.action.setBadgeText({ text: l.text });
+  clearTimeout(notify._t);
+  notify._t = setTimeout(() => chrome.action.setBadgeText({ text: "" }), l.ms);
 }
 
 // ---------- main ----------
@@ -144,10 +160,10 @@ async function run(tab) {
 
     const r = await addSource(item, siteQid, url);
     const what = `${item} ← ${P_SOURCE}: ${siteQid} (${site.name || site.match})`;
-    if (r.status === "exists") notify("Already on Wikidata", `${what}\n${url}`, true);
-    else notify("Saved to Wikidata", `${what}\n${url}`, true);
+    if (r.status === "exists") notify("⚠ Already on Wikidata – nothing changed", `${what}\n${url}`, "warn");
+    else notify("Saved to Wikidata", `${what}\n${url}`, "ok");
   } catch (e) {
-    notify("Wikidata Source Saver", String(e.message || e), false);
+    notify("Wikidata Source Saver", String(e.message || e), "error");
   }
 }
 

@@ -6,7 +6,7 @@
 4. Copy a Wikidata item (Qxxx or its URL), browse to a page on a configured website, press Alt+Shift+S (change at chrome://extensions/shortcuts) or click the toolbar icon.
 
 Result: item gets  P1343: <website item>  with qualifier  P2699: <page URL>.
-- Same website + same URL already present -> nothing is written.
+- Same website + same URL already present (ignoring http/https, www and trailing slash) -> nothing is written; a yellow "=" badge and a notification tell you it is already there.
 - Statement for that website exists without a URL -> the URL qualifier is added to it.
 - Otherwise a new statement is created.
 If the page's domain isn't configured, the settings page opens pre-filled with the domain.

@@ -1,18 +1,52 @@
 {
   "manifest_version": 3,
   "name": "Wikidata Source Saver",
-  "version": "1.2.0",
+  "version": "1.8.0",
   "description": "Press a shortcut to add 'described at URL' (P1343 + P2699) to the Wikidata item in your clipboard, for configured websites.",
-  "permissions": ["activeTab", "scripting", "storage", "clipboardRead", "offscreen", "notifications"],
-  "host_permissions": ["https://www.wikidata.org/*"],
-  "background": { "service_worker": "background.js" },
-  "action": { "default_title": "Save this page as a source on the Wikidata item in your clipboard" },
-  "options_ui": { "page": "options.html", "open_in_tab": true },
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "storage",
+    "clipboardRead",
+    "offscreen",
+    "notifications"
+  ],
+  "host_permissions": [
+    "https://www.wikidata.org/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "Save this page as a source on the Wikidata item in your clipboard"
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
+  },
   "commands": {
     "save-source": {
-      "suggested_key": { "default": "Alt+Shift+S", "mac": "Alt+Shift+S" },
-      "description": "Save current URL as P1343/P2699 source on the item in the clipboard"
+      "suggested_key": {
+        "default": "Alt+Shift+S",
+        "mac": "Alt+Shift+S"
+      },
+      "description": "Save current URL (and the same term on related websites) as P1343/P2699 on the item in the clipboard"
+    },
+    "save-this-only": {
+      "suggested_key": {
+        "default": "Alt+Shift+A",
+        "mac": "Alt+Shift+A"
+      },
+      "description": "Save only the current page (skip related websites)"
     }
   },
-  "icons": { "16": "icons/icon16.png", "48": "icons/icon48.png", "128": "icons/icon128.png" }
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "optional_host_permissions": [
+    "*://*/*"
+  ]
 }

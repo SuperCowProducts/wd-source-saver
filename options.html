@@ -2,40 +2,47 @@
 <html><head><meta charset="utf-8"><title>Wikidata Source Saver – Settings</title>
 <meta name="color-scheme" content="light dark">
 <script>
-  // Apply saved theme before paint to avoid a flash
   try { const t = localStorage.getItem("theme"); if (t) document.documentElement.dataset.theme = t; } catch {}
 </script>
 <style>
   :root{
-    --bg:#ffffff; --fg:#222; --muted:#666; --border:#c8ccd1; --input-bg:#fff;
-    --btn-bg:#f1f3f5; --btn-hover:#e4e7ea; --code-bg:#f2f2f2; --new-bg:#fffbe6; --ok:#2e7d32;
+    --bg:#ffffff; --fg:#222; --muted:#666; --border:#c8ccd1; --input-bg:#fff; --card:#f8f9fa;
+    --btn-bg:#f1f3f5; --btn-hover:#e4e7ea; --code-bg:#f2f2f2; --new-bg:#fffbe6; --ok:#2e7d32; --bad:#c62828;
     color-scheme: light;
   }
   @media (prefers-color-scheme: dark){
     :root:not([data-theme="light"]){
-      --bg:#1b1d20; --fg:#e4e6e8; --muted:#9aa0a6; --border:#464b52; --input-bg:#25282c;
-      --btn-bg:#2f3338; --btn-hover:#3a3f45; --code-bg:#2a2d31; --new-bg:#3b3520; --ok:#6fcf7a;
+      --bg:#1b1d20; --fg:#e4e6e8; --muted:#9aa0a6; --border:#464b52; --input-bg:#25282c; --card:#212428;
+      --btn-bg:#2f3338; --btn-hover:#3a3f45; --code-bg:#2a2d31; --new-bg:#3b3520; --ok:#6fcf7a; --bad:#ef7b7b;
       color-scheme: dark;
     }
   }
   :root[data-theme="dark"]{
-    --bg:#1b1d20; --fg:#e4e6e8; --muted:#9aa0a6; --border:#464b52; --input-bg:#25282c;
-    --btn-bg:#2f3338; --btn-hover:#3a3f45; --code-bg:#2a2d31; --new-bg:#3b3520; --ok:#6fcf7a;
+    --bg:#1b1d20; --fg:#e4e6e8; --muted:#9aa0a6; --border:#464b52; --input-bg:#25282c; --card:#212428;
+    --btn-bg:#2f3338; --btn-hover:#3a3f45; --code-bg:#2a2d31; --new-bg:#3b3520; --ok:#6fcf7a; --bad:#ef7b7b;
     color-scheme: dark;
   }
-  body{font:14px system-ui,sans-serif;max-width:900px;margin:2rem auto;padding:0 1rem;background:var(--bg);color:var(--fg)}
+  body{font:14px system-ui,sans-serif;max-width:920px;margin:2rem auto;padding:0 1rem;background:var(--bg);color:var(--fg)}
   header{display:flex;justify-content:space-between;align-items:center;gap:1rem}
-  h1{font-size:1.4rem} table{border-collapse:collapse;width:100%}
-  th,td{padding:4px 6px;text-align:left} th{font-size:12px;color:var(--muted)}
-  input,select,textarea{padding:5px;font:inherit;width:100%;box-sizing:border-box;background:var(--input-bg);color:var(--fg);border:1px solid var(--border);border-radius:4px}
+  h1{font-size:1.4rem} h2{font-size:1.1rem;margin-top:2rem}
+  label{display:block;font-size:12px;color:var(--muted)}
+  input,select,textarea{padding:5px;font:inherit;width:100%;box-sizing:border-box;background:var(--input-bg);color:var(--fg);border:1px solid var(--border);border-radius:4px;margin-top:2px}
   button{padding:6px 12px;font:inherit;cursor:pointer;background:var(--btn-bg);color:var(--fg);border:1px solid var(--border);border-radius:4px}
   button:hover{background:var(--btn-hover)}
-  .row-new input{background:var(--new-bg)}
+  .card{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:12px;margin:10px 0;position:relative}
+  .card.new{outline:2px solid #fbc02d}
+  .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:8px}
+  .grid4{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:8px;padding-right:34px}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  textarea{font:12px monospace;resize:vertical}
+  details{margin:8px 0;font-size:13px} summary{cursor:pointer;color:var(--muted)}
+  .del{position:absolute;top:8px;right:8px}
   #status{margin-left:1rem;color:var(--ok)} .hint{color:var(--muted);font-size:12px}
-  textarea{height:120px;font:12px monospace}
   code{background:var(--code-bg);padding:1px 4px;border-radius:3px}
   #theme{width:auto}
-  a{color:inherit}
+  pre{background:var(--code-bg);padding:8px;border-radius:6px;white-space:pre-wrap;word-break:break-all;font-size:12px}
+  .ok{color:var(--ok)} .bad{color:var(--bad)}
+  #exportbox{height:110px}
 </style></head>
 <body>
 <header>
@@ -44,26 +51,43 @@
     <select id="theme"><option value="">Auto (system)</option><option value="light">Light</option><option value="dark">Dark</option></select>
   </label>
 </header>
-<p>Copy a Wikidata item ID (e.g. <code>Q42</code> or its URL), go to a configured website, and press
-<b id="shortcut">the shortcut</b> (or click the toolbar icon). It adds
-<code>P1343: &lt;website item&gt;</code> with qualifier <code>P2699: &lt;page URL&gt;</code> to the item.
-Change the shortcut at <code>chrome://extensions/shortcuts</code>.</p>
 
-<table id="tbl">
-  <thead><tr>
-    <th style="width:28%">Site (domain or domain/path)</th>
-    <th style="width:14%">Website item</th>
-    <th style="width:22%">Label (just for you)</th>
-    <th style="width:28%">URL to save</th>
-    <th></th>
-  </tr></thead>
-  <tbody></tbody>
-</table>
+<p>Copy a Wikidata item (<code>Q42</code> or its URL), open a page on a configured website and press
+<b id="shortcut">the shortcut</b> (or click the toolbar icon). It adds <code>P1343: &lt;website item&gt;</code>
+with qualifier <code>P2699: &lt;page URL&gt;</code> – or, if the website has its own Wikidata property (e.g. <code>P2812</code> MathWorld ID), <code>P2812: &lt;ID&gt;</code> instead. If the site has a <b>category</b> and <b>URL templates</b>, the same term is also looked up
+on every other website in that category, and every page that exists is added too.</p>
+<p class="hint">Extra terms: copy <code>Q123, use of property, possession</code> (item first, extra terms after, separated by commas or new lines) to also search
+those terms on all sites in the category – useful when a site uses several IDs for one item.
+Shortcut <b>Alt+Shift+A</b> saves only the current page. Change shortcuts at <code>chrome://extensions/shortcuts</code>.</p>
+
+<h2>Websites</h2>
+<div id="sites"></div>
+<datalist id="cats"></datalist>
 <p><button id="add">+ Add website</button> <button id="save">Save</button><span id="status"></span></p>
-<p class="hint">Matching: <code>nytimes.com</code> matches that domain and subdomains. <code>github.com/wikimedia</code> matches only that path prefix. The most specific match wins.</p>
+<p class="hint">Saving asks Chrome for permission to read the websites in your templates (needed to check whether a page exists).
+Template example: <code>https://www.law.cornell.edu/wex/{id}</code> and <code>https://dictionary.nolo.com/{id}-term.html</code>
+(<code>{id}</code> = the term; <code>{first}</code> = its first letter, e.g. <code>https://www.investopedia.com/terms/{first}/{id}.asp</code>; words are converted between sites using each site's separator and letter case).</p>
 
-<h3>Import / export</h3>
-<textarea id="json"></textarea>
-<p><button id="export">Export current</button> <button id="import">Import (replace)</button></p>
-<script src="options.js"></script>
+<h2>Options</h2>
+<label><input type="checkbox" id="related" style="width:auto"> Look up the term on related websites (same category)</label>
+<label style="max-width:420px;margin-top:8px">If a page redirects to a different address
+  <select id="redirects"><option value="skip">Treat as not found (safer – avoids search/home pages)</option><option value="accept">Accept and save the final URL</option></select>
+</label>
+
+<h2>Test your templates</h2>
+<div class="grid2" style="max-width:560px">
+  <label>Category<select id="tcat"></select></label>
+  <label>Term (e.g. <code>use of force</code>)<input id="tterm" placeholder="use"></label>
+</div>
+<p><button id="preview">Preview URLs</button> <button id="check">Check if they exist</button></p>
+<pre id="tout" hidden></pre>
+
+<h2>Last run</h2>
+<pre id="lastrun">Nothing yet.</pre>
+
+<h2>Import / export</h2>
+<textarea id="exportbox"></textarea>
+<p><button id="export">Export sites</button> <button id="import">Import (replace)</button></p>
+
+<script type="module" src="options.js"></script>
 </body></html>

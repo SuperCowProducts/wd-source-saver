@@ -1,15 +1,16 @@
 {
   "manifest_version": 3,
   "name": "Wikidata Source Saver",
-  "version": "1.8.0",
+  "version": "2.3.0",
   "description": "Press a shortcut to add 'described at URL' (P1343 + P2699) to the Wikidata item in your clipboard, for configured websites.",
   "permissions": [
     "activeTab",
+    "clipboardRead",
+    "notifications",
+    "offscreen",
     "scripting",
     "storage",
-    "clipboardRead",
-    "offscreen",
-    "notifications"
+    "unlimitedStorage"
   ],
   "host_permissions": [
     "https://www.wikidata.org/*"
@@ -39,6 +40,13 @@
         "mac": "Alt+Shift+A"
       },
       "description": "Save only the current page (skip related websites)"
+    },
+    "stop-run": {
+      "suggested_key": {
+        "default": "Alt+Shift+X",
+        "mac": "Alt+Shift+X"
+      },
+      "description": "Stop the current run"
     }
   },
   "icons": {

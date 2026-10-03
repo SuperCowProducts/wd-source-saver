@@ -7,42 +7,39 @@
 <style>
   :root{
     --bg:#ffffff; --fg:#222; --muted:#666; --border:#c8ccd1; --input-bg:#fff; --card:#f8f9fa;
-    --btn-bg:#f1f3f5; --btn-hover:#e4e7ea; --code-bg:#f2f2f2; --new-bg:#fffbe6; --ok:#2e7d32; --bad:#c62828;
+    --btn-bg:#f1f3f5; --btn-hover:#e4e7ea; --code-bg:#f2f2f2; --ok:#2e7d32; --bad:#c62828; --prim:#1565c0;
     color-scheme: light;
   }
   @media (prefers-color-scheme: dark){
     :root:not([data-theme="light"]){
       --bg:#1b1d20; --fg:#e4e6e8; --muted:#9aa0a6; --border:#464b52; --input-bg:#25282c; --card:#212428;
-      --btn-bg:#2f3338; --btn-hover:#3a3f45; --code-bg:#2a2d31; --new-bg:#3b3520; --ok:#6fcf7a; --bad:#ef7b7b;
+      --btn-bg:#2f3338; --btn-hover:#3a3f45; --code-bg:#2a2d31; --ok:#6fcf7a; --bad:#ef7b7b; --prim:#4f8fe0;
       color-scheme: dark;
     }
   }
   :root[data-theme="dark"]{
     --bg:#1b1d20; --fg:#e4e6e8; --muted:#9aa0a6; --border:#464b52; --input-bg:#25282c; --card:#212428;
-    --btn-bg:#2f3338; --btn-hover:#3a3f45; --code-bg:#2a2d31; --new-bg:#3b3520; --ok:#6fcf7a; --bad:#ef7b7b;
+    --btn-bg:#2f3338; --btn-hover:#3a3f45; --code-bg:#2a2d31; --ok:#6fcf7a; --bad:#ef7b7b; --prim:#4f8fe0;
     color-scheme: dark;
   }
-  body{font:14px system-ui,sans-serif;max-width:920px;margin:2rem auto;padding:0 1rem;background:var(--bg);color:var(--fg)}
+  body{font:14px system-ui,sans-serif;max-width:940px;margin:2rem auto;padding:0 1rem;background:var(--bg);color:var(--fg)}
   header{display:flex;justify-content:space-between;align-items:center;gap:1rem}
-  h1{font-size:1.4rem} h2{font-size:1.1rem;margin-top:2rem}
+  h1{font-size:1.4rem} h2{font-size:1.1rem;margin:2rem 0 .5rem}
   label{display:block;font-size:12px;color:var(--muted)}
   input,select,textarea{padding:5px;font:inherit;width:100%;box-sizing:border-box;background:var(--input-bg);color:var(--fg);border:1px solid var(--border);border-radius:4px;margin-top:2px}
+  input[type=checkbox]{width:auto;margin-right:6px}
   button{padding:6px 12px;font:inherit;cursor:pointer;background:var(--btn-bg);color:var(--fg);border:1px solid var(--border);border-radius:4px}
-  button:hover{background:var(--btn-hover)}
-  .card{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:12px;margin:10px 0;position:relative}
-  .card.new{outline:2px solid #fbc02d}
-  .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:8px}
-  .grid4{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:8px;padding-right:34px}
-  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  button:hover{background:var(--btn-hover)} button.p{background:var(--prim);border-color:var(--prim);color:#fff}
+  .card{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:12px;margin:10px 0}
+  .g2,.g3,.g4{display:grid;gap:10px;margin-bottom:8px} .g2{grid-template-columns:1fr 1fr} .g3{grid-template-columns:repeat(3,1fr)} .g4{grid-template-columns:repeat(4,1fr)}
   textarea{font:12px monospace;resize:vertical}
   details{margin:8px 0;font-size:13px} summary{cursor:pointer;color:var(--muted)}
-  .del{position:absolute;top:8px;right:8px}
-  #status{margin-left:1rem;color:var(--ok)} .hint{color:var(--muted);font-size:12px}
-  code{background:var(--code-bg);padding:1px 4px;border-radius:3px}
+  .bar{display:flex;gap:8px;align-items:center;flex-wrap:wrap} .bar select{flex:1;min-width:260px;width:auto}
+  .hint{color:var(--muted);font-size:12px} code{background:var(--code-bg);padding:1px 4px;border-radius:3px}
+  pre{background:var(--code-bg);padding:8px;border-radius:6px;white-space:pre-wrap;word-break:break-all;font-size:12px;max-height:280px;overflow:auto}
+  .ok{color:var(--ok)} .bad{color:var(--bad)} #status{margin-left:1rem}
+  #run{border-left:4px solid var(--border)} #run.on{border-color:var(--prim)}
   #theme{width:auto}
-  pre{background:var(--code-bg);padding:8px;border-radius:6px;white-space:pre-wrap;word-break:break-all;font-size:12px}
-  .ok{color:var(--ok)} .bad{color:var(--bad)}
-  #exportbox{height:110px}
 </style></head>
 <body>
 <header>
@@ -52,42 +49,126 @@
   </label>
 </header>
 
-<p>Copy a Wikidata item (<code>Q42</code> or its URL), open a page on a configured website and press
-<b id="shortcut">the shortcut</b> (or click the toolbar icon). It adds <code>P1343: &lt;website item&gt;</code>
-with qualifier <code>P2699: &lt;page URL&gt;</code> – or, if the website has its own Wikidata property (e.g. <code>P2812</code> MathWorld ID), <code>P2812: &lt;ID&gt;</code> instead. If the site has a <b>category</b> and <b>URL templates</b>, the same term is also looked up
-on every other website in that category, and every page that exists is added too.</p>
-<p class="hint">Extra terms: copy <code>Q123, use of property, possession</code> (item first, extra terms after, separated by commas or new lines) to also search
-those terms on all sites in the category – useful when a site uses several IDs for one item.
-Shortcut <b>Alt+Shift+A</b> saves only the current page. Change shortcuts at <code>chrome://extensions/shortcuts</code>.</p>
+<div id="run" class="card"><span id="runtext">Idle.</span> <button id="stop" hidden>■ Stop</button></div>
+
+<p>Copy a Wikidata item (<code>Q42</code>), open a page on a configured website and press <b id="shortcut">the shortcut</b>
+(<b>Alt+Shift+A</b> = this page only, <b>Alt+Shift+X</b> = stop; change them at <code>chrome://extensions/shortcuts</code>).
+Extra terms: copy <code>Q123, use of property</code> to also look for those terms.</p>
 
 <h2>Websites</h2>
-<div id="sites"></div>
-<datalist id="cats"></datalist>
-<p><button id="add">+ Add website</button> <button id="save">Save</button><span id="status"></span></p>
-<p class="hint">Saving asks Chrome for permission to read the websites in your templates (needed to check whether a page exists).
-Template example: <code>https://www.law.cornell.edu/wex/{id}</code> and <code>https://dictionary.nolo.com/{id}-term.html</code>
-(<code>{id}</code> = the term; <code>{first}</code> = its first letter, e.g. <code>https://www.investopedia.com/terms/{first}/{id}.asp</code>; words are converted between sites using each site's separator and letter case).</p>
+<div class="bar">
+  <select id="siteSel"></select>
+  <button id="new">+ New</button><button id="dup">Duplicate</button><button id="del">Delete</button>
+</div>
 
-<h2>Options</h2>
-<label><input type="checkbox" id="related" style="width:auto"> Look up the term on related websites (same category)</label>
-<label style="max-width:420px;margin-top:8px">If a page redirects to a different address
-  <select id="redirects"><option value="skip">Treat as not found (safer – avoids search/home pages)</option><option value="accept">Accept and save the final URL</option></select>
-</label>
+<div id="editor" class="card" hidden>
+  <div class="g4">
+    <label>Name<input id="f_name" placeholder="MathWorld"></label>
+    <label>Website item (for P1343 fallback)<input id="f_qid" placeholder="Q12345"></label>
+    <label>Default ID property<input id="f_idprop" placeholder="P2812" title="If the website has its own Wikidata property, the ID is saved with it instead of P1343/P2699. Can be overridden per template."></label>
+    <label>Categories (comma-separated)<input id="f_category" list="cats" placeholder="math, geometry"></label>
+  </div>
+  <datalist id="cats"></datalist>
+  <label>URL templates <span class="hint">– one per line. <code>{id}</code> = the term, <code>{first}</code>/<code>{FIRST}</code> = its first letter, <code>{a|b|c}</code> = try each choice.
+      Start a line with a property to save that template's ID with it (<code>P9999 https://…/Enc/{id}.html</code>); lines without one use the default ID property, or P1343 + P2699 if none; <code>P1343 https://…</code> forces the fallback.</span>
+    <textarea id="f_templates" rows="3" placeholder="https://www.mathwords.com/{first}/{id}.htm"></textarea></label>
+  <div class="g3" style="margin-top:8px">
+    <label>Words in the ID separated by<select id="f_sep">
+      <option value="hyphen">hyphen ( - )</option><option value="underscore">underscore ( _ )</option><option value="plus">plus ( + )</option><option value="space">space ( %20 )</option><option value="none">none (CamelCase / single token)</option></select></label>
+    <label>Letter case in the ID<select id="f_case">
+      <option value="lower">lowercase</option><option value="capitalize">Capitalized first word</option><option value="title">Title Case Each Word</option><option value="titlesmall">Title Case, small words lowercase (of, the…)</option><option value="upper">UPPERCASE</option><option value="keep">keep as is</option></select></label>
+    <label>URL to save for this page<select id="f_mode">
+      <option value="nohash">Page URL without #fragment</option><option value="noquery">Strip ?query and #fragment</option><option value="canonical">&lt;link rel=canonical&gt; if present</option><option value="asis">Exactly as in address bar</option></select></label>
+  </div>
+  <label><input type="checkbox" id="f_plurals">Also try plural / singular forms of the term (last word)</label>
+  <label><input type="checkbox" id="f_archive">Unreliable site: always add the latest Wayback Machine snapshot (P1065 + P2960) and accept pages that only exist in the archive</label>
+
+  <details><summary>Use the website's own search engine</summary>
+    <label>Search URL <span class="hint">– <code>{q}</code> = query with +, <code>{q20}</code> = query with %20</span>
+      <input id="f_searchUrl" placeholder="https://mathsisfun.com/search/search.html?query={q}&amp;search=1"></label>
+    <div class="g3" style="margin-top:8px">
+      <label>How to read the results page<select id="f_searchMode"><option value="fetch">plain request (fast, polite)</option><option value="tab">render in a background tab (JavaScript sites)</option></select></label>
+      <label>Which results to keep<select id="f_pickBy"><option value="title">link text matches the term</option><option value="slug">URL contains the term – keep the most general path</option></select></label>
+      <label>Link text must<select id="f_titleMatch"><option value="equal">equal the term</option><option value="start">start with the term</option><option value="contain">contain the term</option></select></label>
+    </div>
+    <label><input type="checkbox" id="f_approvePartial">Matches that don't also <i>equal</i> the term must be approved by me (the review window always opens for them, unticked)</label>
+    <div class="g3"><label>Max results kept<input id="f_searchMax" type="number" min="1" max="20" placeholder="5"></label>
+    <label>Only keep result URLs matching (regex, optional)<input id="f_searchRegex" placeholder="/topics/"></label>
+    <label>Drop result URLs matching (regex, optional)<input id="f_searchExclude" placeholder="mathsisfun\.com/definitions/"></label></div>
+    <div class="hint">The query is always the item's Wikidata label (never a guessed string). Results can be wrong, so searches always go through the review window.</div>
+  </details>
+
+  <details><summary>Advanced</summary>
+    <div class="g2">
+      <label>Match (domain or domain/path) – empty = derived from the first template<input id="f_match" placeholder="law.cornell.edu/wex"></label>
+      <label>"Page not found" text/regex (sites that return 200 for missing pages)<input id="f_notfound" placeholder="Page not found|No results"></label>
+      <label>Small words kept lowercase (Title Case, small words)<input id="f_small" placeholder="a, an, and, as, at, but, by, for, in, nor, of, on, or, the, to, up"></label>
+      <label>Folder for IDs starting with a digit/symbol (<code>{first}</code>)<input id="f_nonletter" placeholder="0-9"></label>
+    </div>
+  </details>
+</div>
+
+<p><button class="p" id="save">Save all</button><span id="status"></span></p>
+<p class="hint">Saving asks Chrome for permission to read the websites in your templates/search URLs (needed to check pages).</p>
+
+<h2>Safety &amp; politeness</h2>
+<div class="card">
+  <div class="g3">
+    <label>Your Wikidata username <span class="hint">(goes into the User-Agent so admins can contact you)</span><input id="s_username" placeholder="ExampleUser"></label>
+    <label>Label language<input id="s_labelLang" placeholder="en"></label>
+    <label>Review window<select id="s_review"><option value="auto">only for many changes or site-search results</option><option value="always">always</option><option value="never">never</option></select></label>
+  </div>
+  <div class="g4">
+    <label>Review when more than … new statements<input type="number" min="0" id="s_reviewThreshold"></label>
+    <label>Max statements per edit<input type="number" min="1" max="20" id="s_maxPerEdit"></label>
+    <label>Min. seconds between edits<input type="number" min="0" id="s_minEditInterval"></label>
+    <label>Max edits per hour<input type="number" min="1" id="s_maxEditsPerHour"></label>
+  </div>
+  <div class="g4">
+    <label>Delay between requests to one site (ms)<input type="number" min="500" id="s_hostDelayMs"></label>
+    <label>Max URL guesses per site<input type="number" min="1" id="s_maxPerSite"></label>
+    <label>Max URL guesses per run<input type="number" min="1" id="s_maxTotal"></label>
+    <label>Remember "page doesn't exist" for (days)<input type="number" min="0" id="s_missTtlDays"></label>
+  </div>
+  <label><input type="checkbox" id="s_related">Look for the term on related websites (same category)</label>
+  <label><input type="checkbox" id="s_useHistory">Use the history log to skip statements that are already known</label>
+  <label style="max-width:460px;margin-top:6px">If a page redirects to a different address
+    <select id="s_redirects"><option value="skip">treat as not found (safer – avoids search/home pages)</option><option value="accept">accept and save the final URL</option></select></label>
+  <p class="bar"><button id="sexport">Export these settings</button>
+    <button id="simport">Import settings…</button><input type="file" id="sfile" accept="application/json" hidden>
+    <span class="hint">(exports exactly what is in the fields above, saved or not; includes your username)</span></p>
+  <p class="hint">Every edit is started by you, goes in one edit per run, and waits for the limits above. Wikimedia's bot policy asks unflagged bots for
+  over a minute between edits and for <code>maxlag</code> to be respected; lowering these is at your own risk. If you ever plan batch runs, request a bot account instead.</p>
+</div>
 
 <h2>Test your templates</h2>
-<div class="grid2" style="max-width:560px">
+<div class="g2" style="max-width:560px">
   <label>Category<select id="tcat"></select></label>
   <label>Term (e.g. <code>use of force</code>)<input id="tterm" placeholder="use"></label>
 </div>
 <p><button id="preview">Preview URLs</button> <button id="check">Check if they exist</button></p>
 <pre id="tout" hidden></pre>
 
+<h2>History log</h2>
+<div class="card">
+  <div id="hstats" class="hint">…</div>
+  <p class="bar">
+    <button id="hexport">Export</button>
+    <button id="himport">Import…</button><input type="file" id="hfile" accept="application/json" hidden>
+    <button id="hrecent">Show recent</button>
+    <button id="hclear">Clear history</button><button id="hclearmiss">Clear “doesn't exist” cache</button>
+  </p>
+  <p class="bar"><input id="hforget" placeholder="Q42" style="width:120px"><button id="hforgetbtn">Forget this item</button>
+  <span class="hint">(use when a statement was removed on Wikidata and should be re-added)</span></p>
+  <pre id="hout" hidden></pre>
+</div>
+
 <h2>Last run</h2>
 <pre id="lastrun">Nothing yet.</pre>
 
-<h2>Import / export</h2>
-<textarea id="exportbox"></textarea>
-<p><button id="export">Export sites</button> <button id="import">Import (replace)</button></p>
+<h2>Import / export websites</h2>
+<textarea id="exportbox" style="height:110px"></textarea>
+<p><button id="export">Export websites</button> <button id="import">Import (replace)</button></p>
 
 <script type="module" src="options.js"></script>
 </body></html>

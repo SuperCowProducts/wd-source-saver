@@ -1,183 +1,268 @@
-import { buildCandidates, originsFor, checkUrl, dedupeIds, cleanTemplates, effectiveMatch } from "./lib.js";
+import { buildCandidates, originsFor, checkUrl, dedupeIds, effectiveMatch, cats, cleanTerm, usable, DEFAULTS,
+  exportSettingsObject, parseSettingsImport } from "./lib.js";
+import { getSites, getSettings, saveAll } from "./store.js";
 
 const $ = id => document.getElementById(id);
-const sitesEl = $("sites");
+let sites = [], idx = -1, settings = { ...DEFAULTS };
 
-const SEP = [["hyphen", "hyphen  ( - )"], ["underscore", "underscore  ( _ )"], ["plus", "plus  ( + )"], ["space", "space  ( %20 )"], ["none", "none (single token)"]];
-const CASE = [["lower", "lowercase"], ["capitalize", "Capitalized first word"], ["title", "Title Case Each Word"], ["titlesmall", "Title Case, small words lowercase (of, the…)"], ["upper", "UPPERCASE"], ["keep", "keep as is"]];
-const MODES = [
-  ["nohash", "Page URL without #fragment"], ["noquery", "Strip ?query and #fragment"],
-  ["canonical", "<link rel=canonical> if present"], ["asis", "Exactly as in address bar"]
+// ---------- website editor (one at a time) ----------
+const FIELDS = [
+  ["name", "f_name"], ["qid", "f_qid"], ["idProperty", "f_idprop"], ["category", "f_category"],
+  ["templates", "f_templates", "lines"], ["plurals", "f_plurals", "bool"], ["archive", "f_archive", "bool"],
+  ["separator", "f_sep", "text", "hyphen"], ["caseMode", "f_case", "text", "lower"], ["urlMode", "f_mode", "text", "nohash"],
+  ["searchUrl", "f_searchUrl"], ["searchMode", "f_searchMode", "text", "fetch"], ["pickBy", "f_pickBy", "text", "title"],
+  ["titleMatch", "f_titleMatch", "text", "equal"], ["approvePartial", "f_approvePartial", "bool"], ["searchMax", "f_searchMax"], ["searchRegex", "f_searchRegex"], ["searchExclude", "f_searchExclude"],
+  ["match", "f_match"], ["notFound", "f_notfound"], ["nonLetter", "f_nonletter"], ["smallWords", "f_small"]
 ];
-const opts = list => list.map(([v, l]) => `<option value="${v}">${l}</option>`).join("");
 
-function addCard(s = {}, isNew = false) {
-  const el = document.createElement("section");
-  el.className = "card" + (isNew ? " new" : "");
-  el.innerHTML = `
-    <button class="del" title="Remove this website">✕</button>
-    <div class="grid4">
-      <label>Name<input class="name" placeholder="MathWorld"></label>
-      <label>Website item (P1343)<input class="qid" placeholder="Q12345"></label>
-      <label>…or ID property<input class="idprop" placeholder="P2812" title="If this website has its own Wikidata property, the ID is saved with it instead of P1343/P2699"></label>
-      <label>Category<input class="category" list="cats" placeholder="math"></label>
-    </div>
-    <label>URL templates <span class="hint">– one per line. <code>{id}</code> = the term, <code>{first}</code> / <code>{FIRST}</code> = its first letter (lower/upper case), <code>{algebra|data|geometry}</code> = try each choice</span>
-      <textarea class="templates" rows="2" placeholder="https://www.mathwords.com/{first}/{id}.htm"></textarea></label>
-    <label style="margin-top:6px"><input type="checkbox" class="plurals" style="width:auto"> Also try plural / singular forms of the term (last word)</label>
-    <label style="margin-top:6px"><input type="checkbox" class="archive" style="width:auto"> Unreliable site: always add the latest Wayback Machine snapshot (P1065 + P2960) and accept pages that only exist in the archive</label>
-    <div class="grid" style="margin-top:8px">
-      <label>Words in the ID separated by<select class="sep">${opts(SEP)}</select></label>
-      <label>Letter case in the ID<select class="case">${opts(CASE)}</select></label>
-      <label>URL to save for this page<select class="mode">${opts(MODES)}</select></label>
-    </div>
-    <details><summary>Advanced</summary>
-      <div class="grid2">
-        <label>Match (domain or domain/path) – leave empty to derive from template<input class="match" placeholder="law.cornell.edu/wex"></label>
-        <label>"Page not found" text/regex (for sites that return 200 for missing pages)<input class="notfound" placeholder="Page not found|No results"></label>
-        <label>Small words kept lowercase in "Title Case, small words" <span class="hint">(default: a, an, and, as, at, but, by, for, in, nor, of, on, or, the, to, up)</span><input class="small" placeholder="of, the, and"></label>
-        <label>Folder for IDs starting with a digit/symbol (for <code>{first}</code>) – empty = the character itself<input class="nonletter" placeholder="0-9"></label>
-      </div>
-    </details>`;
-  const q = sel => el.querySelector(sel);
-  q(".name").value = s.name || "";
-  q(".qid").value = s.qid || "";
-  q(".idprop").value = s.idProperty || "";
-  q(".category").value = s.category || "";
-  q(".templates").value = (s.templates || []).join("\n");
-  q(".plurals").checked = !!s.plurals;
-  q(".archive").checked = !!s.archive;
-  q(".sep").value = s.separator || "hyphen";
-  q(".case").value = s.caseMode || "lower";
-  q(".mode").value = s.urlMode || "nohash";
-  q(".match").value = s.match || "";
-  q(".notfound").value = s.notFound || "";
-  q(".nonletter").value = s.nonLetter || "";
-  q(".small").value = s.smallWords || "";
-  q(".del").onclick = () => { el.remove(); refreshCats(); };
-  sitesEl.appendChild(el);
-  if (isNew) q(".qid").focus();
-  return el;
+const siteLabel = s => {
+  const incomplete = !usable({ ...s, templates: s.templates || [] }) || !(s.match || (s.templates || []).length || s.searchUrl);
+  const c = cats(s).join(", ");
+  return `${s.name || effectiveMatch({ ...s, templates: s.templates || [] }) || s.qid || s.idProperty || "(new website)"}${c ? "  ·  " + c : ""}${incomplete ? "  ⚠ incomplete" : ""}`;
+};
+
+function renderSelect() {
+  const sel = $("siteSel");
+  sel.innerHTML = "";
+  sites.forEach((s, i) => { const o = document.createElement("option"); o.value = i; o.textContent = siteLabel(s); sel.append(o); });
+  if (idx >= 0) sel.value = idx;
+  $("editor").hidden = idx < 0;
+  $("dup").disabled = $("del").disabled = idx < 0;
+  refreshCats();
 }
 
-function collect() {
-  return [...sitesEl.querySelectorAll(".card")].map(el => {
-    const q = sel => el.querySelector(sel);
-    const s = {
-      name: q(".name").value.trim(),
-      qid: (q(".qid").value.match(/Q\d+/i) || [""])[0].toUpperCase(),
-      idProperty: (q(".idprop").value.match(/P\d+/i) || [""])[0].toUpperCase(),
-      category: q(".category").value.trim(),
-      templates: q(".templates").value.split("\n").map(t => t.trim()).filter(Boolean),
-      plurals: q(".plurals").checked,
-      archive: q(".archive").checked,
-      separator: q(".sep").value,
-      caseMode: q(".case").value,
-      urlMode: q(".mode").value,
-      match: q(".match").value.trim(),
-      notFound: q(".notfound").value.trim(),
-      nonLetter: q(".nonletter").value.trim(),
-      smallWords: q(".small").value.trim()
-    };
-    return s;
-  }).filter(s => (s.qid || s.idProperty) && (s.match || s.templates.length));
+function loadEditor() {
+  const s = sites[idx];
+  if (!s) return;
+  for (const [key, id, type, def] of FIELDS) {
+    const el = $(id), v = s[key];
+    if (type === "bool") el.checked = !!v;
+    else if (type === "lines") el.value = (v || []).join("\n");
+    else el.value = v ?? def ?? "";
+  }
+}
+
+function readField([key, id, type, def]) {
+  const el = $(id);
+  if (type === "bool") return el.checked;
+  if (type === "lines") return el.value.split("\n").map(x => x.trim()).filter(Boolean);
+  return el.value;
+}
+
+for (const f of FIELDS) {
+  $(f[1]).addEventListener("input", () => {
+    if (idx < 0) return;
+    sites[idx][f[0]] = readField(f);
+    const o = $("siteSel").options[idx]; if (o) o.textContent = siteLabel(sites[idx]);
+    refreshCats();
+  });
+}
+
+function select(i) { idx = i; renderSelect(); loadEditor(); }
+$("siteSel").onchange = () => select(Number($("siteSel").value));
+$("new").onclick = () => { sites.push({}); select(sites.length - 1); $("f_name").focus(); };
+$("dup").onclick = () => { const c = structuredClone(sites[idx]); c.name = (c.name || "") + " (copy)"; sites.splice(idx + 1, 0, c); select(idx + 1); };
+$("del").onclick = () => {
+  if (!confirm(`Delete “${siteLabel(sites[idx])}”?`)) return;
+  sites.splice(idx, 1); select(Math.min(idx, sites.length - 1));
+};
+
+function normalizeSite(s) {
+  const o = { ...s };
+  o.qid = ((s.qid || "").match(/Q\d+/i) || [""])[0].toUpperCase();
+  o.idProperty = ((s.idProperty || "").match(/P\d+/i) || [""])[0].toUpperCase();
+  o.templates = (s.templates || []).map(t => t.trim()).filter(Boolean);
+  for (const k of ["name", "category", "match", "notFound", "nonLetter", "smallWords", "searchUrl", "searchRegex", "searchExclude"]) o[k] = (s[k] || "").trim();
+  o.searchMax = Number(s.searchMax) > 0 ? Number(s.searchMax) : "";
+  return o;
 }
 
 function refreshCats() {
-  const cats = [...new Set(collect().map(s => s.category).filter(Boolean))];
-  $("cats").innerHTML = cats.map(c => `<option value="${c.replace(/"/g, "&quot;")}">`).join("");
+  const all = [...new Set(sites.flatMap(cats))];
+  $("cats").innerHTML = all.map(c => `<option value="${c.replace(/"/g, "&quot;")}">`).join("");
   const sel = $("tcat"), prev = sel.value;
-  sel.innerHTML = cats.map(c => `<option>${c.replace(/</g, "&lt;")}</option>`).join("");
-  if (cats.includes(prev)) sel.value = prev;
-}
-sitesEl.addEventListener("input", refreshCats);
-
-function getSettings() {
-  return { related: $("related").checked, redirects: $("redirects").value };
+  sel.innerHTML = "";
+  for (const c of all) { const o = document.createElement("option"); o.textContent = c; sel.append(o); }
+  if (all.includes(prev)) sel.value = prev;
 }
 
-async function load() {
-  const { sites = [], settings = {} } = await chrome.storage.sync.get(["sites", "settings"]);
-  sitesEl.innerHTML = "";
-  sites.forEach(s => addCard(s));
-  const add = new URLSearchParams(location.search).get("add");
-  if (add && !sites.some(s => effectiveMatch(s) === add)) addCard({ match: add }, true);
-  if (!sitesEl.children.length) addCard();
-  $("related").checked = settings.related !== false;
-  $("redirects").value = settings.redirects || "skip";
-  refreshCats();
-  const cmds = await chrome.commands.getAll();
-  $("shortcut").textContent = cmds.find(c => c.name === "save-source")?.shortcut || "(no shortcut set)";
-  showLastRun();
+// ---------- settings ----------
+const SET_FIELDS = [
+  ["username", "s_username"], ["labelLang", "s_labelLang"], ["review", "s_review"], ["redirects", "s_redirects"],
+  ["reviewThreshold", "s_reviewThreshold", "num"], ["maxPerEdit", "s_maxPerEdit", "num"], ["minEditInterval", "s_minEditInterval", "num"],
+  ["maxEditsPerHour", "s_maxEditsPerHour", "num"], ["hostDelayMs", "s_hostDelayMs", "num"], ["maxPerSite", "s_maxPerSite", "num"],
+  ["maxTotal", "s_maxTotal", "num"], ["missTtlDays", "s_missTtlDays", "num"],
+  ["related", "s_related", "bool"], ["useHistory", "s_useHistory", "bool"]
+];
+function loadSettings(src = settings) {
+  for (const [k, id, t] of SET_FIELDS) { const el = $(id); if (t === "bool") el.checked = !!src[k]; else el.value = src[k] ?? ""; }
 }
+function collectSettings() {
+  const o = {};
+  for (const [k, id, t] of SET_FIELDS) {
+    const el = $(id);
+    if (t === "bool") o[k] = el.checked;
+    else if (t === "num") { const n = Number(el.value); o[k] = Number.isFinite(n) && el.value !== "" ? n : DEFAULTS[k]; }
+    else o[k] = el.value.trim() || DEFAULTS[k];
+  }
+  o.maxPerEdit = Math.max(1, Math.min(20, o.maxPerEdit));
+  o.hostDelayMs = Math.max(500, o.hostDelayMs);          // never hammer a website
+  o.username = o.username === DEFAULTS.username ? "" : o.username;
+  return o;
+}
+
+$("save").onclick = async () => {
+  const clean = sites.map(normalizeSite).filter(s => s.qid || s.idProperty || s.templates.length || s.match || s.searchUrl);
+  const origins = originsFor(clean);
+  let granted = true;
+  if (origins.length) { try { granted = await chrome.permissions.request({ origins }); } catch (e) { console.error(e); granted = false; } }
+  settings = collectSettings();
+  await saveAll(clean, settings);
+  sites = clean; idx = Math.min(idx, sites.length - 1); renderSelect(); if (idx >= 0) loadEditor(); loadSettings();
+  const st = $("status");
+  st.className = granted ? "ok" : "bad";
+  st.textContent = granted ? "Saved ✓" : "Saved, but access to some websites was denied – checking those won't work.";
+  setTimeout(() => st.textContent = "", 5000);
+};
+
+$("sexport").onclick = () => {
+  const blob = new Blob([JSON.stringify(exportSettingsObject(collectSettings()), null, 2)], { type: "application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `wikidata-source-saver-settings-${new Date().toISOString().slice(0, 10)}.json`;
+  a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+};
+$("simport").onclick = () => $("sfile").click();
+$("sfile").onchange = async () => {
+  const f = $("sfile").files[0]; $("sfile").value = "";
+  if (!f) return;
+  const st = $("status");
+  try {
+    const imported = parseSettingsImport(await f.text());
+    loadSettings({ ...DEFAULTS, ...collectSettings(), ...imported });
+    st.className = ""; st.textContent = `Imported ${Object.keys(imported).length} settings into the fields – press “Save all” to keep them.`;
+  } catch (e) { st.className = "bad"; st.textContent = "Import failed: " + e.message; }
+};
+
+// ---------- live status ----------
+function showStatus(s) {
+  const on = !!s?.running;
+  $("run").classList.toggle("on", on);
+  $("stop").hidden = !on;
+  $("runtext").textContent = on
+    ? `⏳ Working: ${s.stage}${s.total ? ` (${s.done}/${s.total})` : ""}`
+    : "Idle.";
+}
+chrome.storage.session.get("status").then(r => showStatus(r.status));
+chrome.storage.onChanged.addListener((ch, area) => {
+  if (area === "session" && ch.status) showStatus(ch.status.newValue);
+  if (area === "local" && ch.lastRun) showLastRun();
+  if (area === "local" && (ch.history || ch.misses)) showStats();
+});
+$("stop").onclick = () => chrome.runtime.sendMessage({ type: "stop" });
 
 async function showLastRun() {
   const { lastRun } = await chrome.storage.local.get("lastRun");
-  if (!lastRun) return;
-  $("lastrun").textContent = `${new Date(lastRun.time).toLocaleString()} – ${lastRun.item}\n` + lastRun.lines.join("\n");
+  if (lastRun) $("lastrun").textContent = `${new Date(lastRun.time).toLocaleString()} – ${lastRun.item}\n` + lastRun.lines.join("\n");
 }
 
-$("add").onclick = () => addCard({}, false);
-
-$("save").onclick = async () => {
-  const sites = collect();
-  const origins = originsFor(sites);
-  let granted = true;
-  if (origins.length) {
-    try { granted = await chrome.permissions.request({ origins }); } catch (e) { console.error(e); granted = false; }
-  }
-  await chrome.storage.sync.set({ sites, settings: getSettings() });
-  const st = $("status");
-  st.style.color = granted ? "var(--ok)" : "var(--bad)";
-  st.textContent = granted ? "Saved ✓" : "Saved, but access to some websites was denied – checking those won't work.";
-  setTimeout(() => st.textContent = "", 5000);
-  refreshCats();
-};
-
-// ----- template tester -----
+// ---------- template tester ----------
+const sleep = ms => new Promise(r => setTimeout(r, ms));
 function testCandidates() {
-  const sites = collect();
-  const words = $("tterm").value.trim().split(/[\s_\-]+/).filter(Boolean);
-  const ids = dedupeIds([{ words }]);
-  return { sites, cands: buildCandidates(sites, { category: $("tcat").value }, ids) };
+  const cleaned = sites.map(normalizeSite);
+  const t = cleanTerm($("tterm").value);
+  const ids = t ? dedupeIds([{ words: t.words }]) : [];
+  return buildCandidates(cleaned, { category: $("tcat").value }, ids, { perSite: settings.maxPerSite, total: settings.maxTotal });
 }
-
 $("preview").onclick = () => {
-  const { cands } = testCandidates();
+  const cands = testCandidates();
   const out = $("tout"); out.hidden = false;
-  out.textContent = cands.length ? cands.map(c => `${c.site.name || c.site.qid || c.site.idProperty}${c.site.idProperty ? `  →  ${c.site.idProperty}: ${c.value}` : ""}${c.site.archive ? "  [+ Wayback]" : ""}\n  ${c.url}`).join("\n") : "No URLs: pick a category with templates and enter a term.";
+  out.textContent = cands.length
+    ? cands.map(c => `${c.site.name || c.site.qid || c.site.idProperty}${c.prop ? `  →  ${c.prop}: ${c.value}` : "  →  P1343 + P2699"}${c.site.archive ? "  [+ Wayback]" : ""}\n  ${c.url}`).join("\n")
+    : "No URLs: pick a category with templates and enter a plain term (letters/numbers).";
 };
-
 $("check").onclick = async () => {
-  const { cands } = testCandidates();
+  const cands = testCandidates().slice(0, 20);
   const out = $("tout"); out.hidden = false;
-  if (!cands.length) { out.textContent = "No URLs: pick a category with templates and enter a term."; return; }
-  const origins = originsFor(cands.map(c => c.site));
-  try { await chrome.permissions.request({ origins }); } catch (e) { console.error(e); }
-  out.textContent = "Checking…";
-  const settings = getSettings();
-  const rs = await Promise.all(cands.map(async c => ({ c, r: await checkUrl(c.url, c.site, settings) })));
-  out.innerHTML = "";
-  for (const { c, r } of rs) {
+  if (!cands.length) { out.textContent = "No URLs: pick a category with templates and enter a plain term."; return; }
+  try { await chrome.permissions.request({ origins: originsFor(cands.map(c => c.site)) }); } catch (e) { console.error(e); }
+  out.textContent = "";
+  for (const c of cands) {                       // one at a time, spaced out
+    const r = await checkUrl(c.url, c.site, settings);
     const d = document.createElement("div");
     d.innerHTML = `<span class="${r.found ? "ok" : "bad"}">${r.found ? "✓ found" : "✗ " + r.reason}</span> `;
     d.append(`${c.site.name || c.site.qid || c.site.idProperty} – ${c.url}`);
     out.appendChild(d);
+    await sleep(Math.max(800, settings.hostDelayMs));
   }
 };
 
-// ----- import / export -----
-$("export").onclick = () => $("exportbox").value = JSON.stringify(collect(), null, 2);
+// ---------- history log ----------
+async function getHist() {
+  const { history = { items: {} }, misses = {} } = await chrome.storage.local.get(["history", "misses"]);
+  return { history, misses };
+}
+async function showStats() {
+  const { history, misses } = await getHist();
+  const items = Object.keys(history.items);
+  const n = items.reduce((a, q) => a + Object.keys(history.items[q]).length, 0);
+  const pushed = items.reduce((a, q) => a + Object.values(history.items[q]).filter(r => r.k === "pushed").length, 0);
+  $("hstats").textContent = `${n} statements on ${items.length} items (${pushed} pushed by this tool, ${n - pushed} found already present) · ${Object.keys(misses).length} cached “doesn't exist” pages`;
+}
+$("hexport").onclick = async () => {
+  const { history, misses } = await getHist();
+  const blob = new Blob([JSON.stringify({ format: "wikidata-source-saver-history", version: 1, exported: new Date().toISOString(), history, misses }, null, 2)], { type: "application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `wikidata-source-saver-history-${new Date().toISOString().slice(0, 10)}.json`;
+  a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+};
+$("himport").onclick = () => $("hfile").click();
+$("hfile").onchange = async () => {
+  const f = $("hfile").files[0]; $("hfile").value = "";
+  if (!f) return;
+  try {
+    const d = JSON.parse(await f.text());
+    if (d.format !== "wikidata-source-saver-history" || !d.history?.items) throw new Error("not a history file");
+    const { history, misses } = await getHist();
+    let added = 0;
+    for (const [q, recs] of Object.entries(d.history.items)) {
+      const mine = history.items[q] = history.items[q] || {};
+      for (const [k, r] of Object.entries(recs)) if (!mine[k] || (r.t || 0) > (mine[k].t || 0)) { if (!mine[k]) added++; mine[k] = r; }
+    }
+    for (const [u, t] of Object.entries(d.misses || {})) misses[u] = Math.max(misses[u] || 0, t);
+    await chrome.storage.local.set({ history, misses });
+    $("hstats").textContent = `Imported (${added} new statements). `; setTimeout(showStats, 2500);
+  } catch (e) { alert("Import failed: " + e.message); }
+};
+$("hrecent").onclick = async () => {
+  const { history } = await getHist();
+  const rows = Object.entries(history.items).flatMap(([q, recs]) => Object.values(recs).map(r => ({ q, ...r })))
+    .sort((a, b) => b.t - a.t).slice(0, 100);
+  const out = $("hout"); out.hidden = false;
+  out.textContent = rows.map(r => `${new Date(r.t).toISOString().slice(0, 16).replace("T", " ")}  ${r.k === "pushed" ? "pushed " : "present"}  ${r.q}  ${r.n}  ${r.p ? r.p + ": " + r.v : r.u}${r.a ? "  (+archive)" : ""}`).join("\n") || "Empty.";
+};
+$("hclear").onclick = async () => { if (confirm("Delete the whole history log?")) { await chrome.storage.local.set({ history: { items: {} } }); showStats(); } };
+$("hclearmiss").onclick = async () => { await chrome.storage.local.set({ misses: {} }); showStats(); };
+$("hforgetbtn").onclick = async () => {
+  const q = ($("hforget").value.match(/Q\d+/i) || [""])[0].toUpperCase();
+  if (!q) return;
+  const { history } = await getHist(); delete history.items[q];
+  await chrome.storage.local.set({ history }); $("hforget").value = ""; showStats();
+};
+
+// ---------- import / export websites ----------
+$("export").onclick = () => $("exportbox").value = JSON.stringify(sites.map(normalizeSite), null, 2);
 $("import").onclick = async () => {
   try {
     const arr = JSON.parse($("exportbox").value);
     if (!Array.isArray(arr)) throw 0;
-    await chrome.storage.sync.set({ sites: arr });
-    load();
+    sites = arr; idx = arr.length ? 0 : -1; renderSelect(); if (idx >= 0) loadEditor();
+    $("status").textContent = "Imported – press “Save all” to keep it."; $("status").className = "";
   } catch { alert("Invalid JSON"); }
 };
 
-// ----- theme -----
+// ---------- theme ----------
 const themeSel = $("theme");
 try { themeSel.value = localStorage.getItem("theme") || ""; } catch {}
 themeSel.onchange = () => {
@@ -186,4 +271,17 @@ themeSel.onchange = () => {
   try { v ? localStorage.setItem("theme", v) : localStorage.removeItem("theme"); } catch {}
 };
 
-load();
+// ---------- start ----------
+(async () => {
+  sites = await getSites();
+  settings = await getSettings();
+  loadSettings();
+  const add = new URLSearchParams(location.search).get("add");
+  if (add && !sites.some(s => effectiveMatch({ ...s, templates: s.templates || [] }) === add)) sites.push({ match: add });
+  idx = add ? sites.length - 1 : (sites.length ? 0 : -1);
+  renderSelect(); if (idx >= 0) loadEditor();
+  if (add) $("f_qid").focus();
+  const cmds = await chrome.commands.getAll();
+  $("shortcut").textContent = cmds.find(c => c.name === "save-source")?.shortcut || "(no shortcut set)";
+  showStats(); showLastRun();
+})();

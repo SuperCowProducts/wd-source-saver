@@ -39,7 +39,10 @@ re-checked next time. "Forget this item" if a statement was removed on Wikidata.
 Templates: `{id}`, `{first}`/`{FIRST}`, `{a|b|c}` choices. Separator(s) + letter case convert the term between sites.
 Tick several separators for inconsistent sites (investopedia: `none` + `hyphen` tries incomestatement and income-statement).
 Categories: several allowed (`math, geometry`); sites sharing any category are related.
-ID property: save `P2812: MonotonicFunction` instead of P1343/P2699. Per template: start a template line with the
+ID property: save `P2812: MonotonicFunction` instead of P1343/P2699. If the property stores more than the {id} part, add a value
+pattern after the property: `P10715:{first}/{id} https://www.investopedia.com/terms/{first}/{id}.asp` stores `f/financial-statements`
+(placeholders {id}, {first}, {FIRST}; also available per website as "ID value pattern" in Advanced). It is used both when reading a page
+and when building IDs for other websites, so the history and duplicate checks compare the full value. Per template: start a template line with the
 property (`P9999 https://www.econlib.org/library/Enc/{id}.html`); lines without one use the site's default ID property,
 or fall back to P1343 + P2699 (needs the website item); `P1343 https://…` forces the fallback.
 Search: URL with `{q}` (+) or `{q20}` (%20); "link text matches the term" (mathsisfun; ignores case, accents, punctuation, and CamelCase/no-space spellings) or

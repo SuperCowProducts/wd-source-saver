@@ -702,7 +702,7 @@ async function runInner(tab, only, s, signal) {
   }
   const entries = [], skipped = [], knownLines = [];
   const firstProp = cur.extracted ? cur.extracted.prop : (siteDefaultProp(site) === "P1343" ? "" : siteDefaultProp(site));
-  const first = makeEntry(site, url, cur.extracted?.raw, archive, firstProp);
+  const first = makeEntry(site, url, cur.extracted?.value, archive, firstProp);
   if (!first) skipped.push({ label: labelOf(site), url: href, reason: whyNot(site, firstProp) });
   else if (isKnown(entryKey(first), first.archiveWanted)) knownLines.push(describe(first));
   else entries.push(first);

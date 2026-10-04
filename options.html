@@ -81,7 +81,7 @@ Wikidata labels and aliases are never used – only the page's own ID and the ex
     <input id="f_language" placeholder="en"></label>
   <datalist id="cats"></datalist>
   <label>URL templates <span class="hint">– one per line. <code>{id}</code> = the term, <code>{first}</code>/<code>{FIRST}</code> = its first letter, <code>{a|b|c}</code> = try each choice.
-      Start a line with a property to save that template's ID with it (<code>P9999 https://…/Enc/{id}.html</code>); lines without one use the default ID property, or P1343 + P2699 if none; <code>P1343 https://…</code> forces the fallback.</span>
+      Start a line with a property to save that template's ID with it (<code>P9999 https://…/Enc/{id}.html</code>); if the property stores more than <code>{id}</code>, say so after the property: <code>P10715:{first}/{id} https://…/terms/{first}/{id}.asp</code> stores <code>f/financial-statements</code>; lines without one use the default ID property, or P1343 + P2699 if none; <code>P1343 https://…</code> forces the fallback.</span>
     <textarea id="f_templates" rows="3" placeholder="https://www.mathwords.com/{first}/{id}.htm"></textarea></label>
   <div class="g3" style="margin-top:8px">
     <fieldset id="f_sep" style="border:1px solid var(--border);border-radius:4px;padding:2px 8px;margin:0">
@@ -124,6 +124,7 @@ Wikidata labels and aliases are never used – only the page's own ID and the ex
       <label>Match (domain or domain/path) – empty = derived from the first template<input id="f_match" placeholder="law.cornell.edu/wex"></label>
       <label>"Page not found" text/regex (sites that return 200 for missing pages)<input id="f_notfound" placeholder="Page not found|No results"></label>
       <label>Small words kept lowercase (Title Case, small words)<input id="f_small" placeholder="a, an, and, as, at, but, by, for, in, nor, of, on, or, the, to, up"></label>
+      <label>ID value pattern (default ID property; empty = <code>{id}</code>)<input id="f_idvalue" placeholder="{first}/{id}"></label>
       <label>Folder for IDs starting with a digit/symbol (<code>{first}</code>)<input id="f_nonletter" placeholder="0-9"></label>
     </div>
   </details>

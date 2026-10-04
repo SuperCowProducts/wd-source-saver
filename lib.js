@@ -38,15 +38,26 @@ export const sharesCat = (a, b) => { const cb = cats(b); return cats(a).some(c =
 //   P9999 https://www.econlib.org/library/Enc/{id}.html      -> saved as  P9999: <id>
 //   https://www.econlib.org/library/Topics/{a|b}/{id}.html   -> site's default property if set, else P1343 + P2699
 //   P1343 https://…/{id}.html                                -> force the P1343 + P2699 fallback
-const PFX = /^\s*(P\d+)\s+(?=\S)/i;
+const PFX = /^\s*(P\d+)(?::(\S+))?\s+(?=\S)/i;   // P10715  |  P10715:{first}/{id}
 export function parseTemplates(site) {
   return (site.templates || []).map(l => String(l).trim()).filter(Boolean).map(l => {
     const m = l.match(PFX);
-    return { tpl: m ? l.slice(m[0].length).trim() : l, prop: m ? m[1].toUpperCase() : null };
+    return { tpl: m ? l.slice(m[0].length).trim() : l, prop: m ? m[1].toUpperCase() : null, val: m?.[2] || null };
   }).filter(x => x.tpl.includes("{id}"));
 }
 export const cleanTemplates = site => parseTemplates(site).map(x => x.tpl);
 export const siteDefaultProp = site => ((site.idProperty || "").match(/P\d+/i) || [""])[0].toUpperCase();
+// How the VALUE of the ID property is written. Default {id}; e.g. {first}/{id} when Wikidata stores "f/financial-statements".
+//   per template:   P10715:{first}/{id} https://www.investopedia.com/terms/{first}/{id}.asp
+//   per website:    "ID value pattern" field (used by templates without their own pattern)
+export function valuePattern(site, tpl) {
+  const t = parseTemplates(site).find(x => x.tpl === tpl);
+  return t?.val || String(site.idValue || "").trim() || "{id}";
+}
+export function fillValue(pattern, { raw, first }) {
+  const f = first ?? raw.charAt(0);
+  return String(pattern || "{id}").split("{id}").join(raw).split("{first}").join(f.toLowerCase()).split("{FIRST}").join(f.toUpperCase());
+}
 // property that stores the ID for this template ("" = fall back to P1343 + P2699)
 export function templateProp(site, tpl) {
   const t = parseTemplates(site).find(x => x.tpl === tpl);
@@ -57,7 +68,7 @@ export const usable = s => !!(s.qid || s.idProperty || parseTemplates(s).some(t 
 // for a URL that came from a search: which property + value? (value null = can't be read)
 export function propForUrl(site, url) {
   const m = matchTemplates(site, url);
-  if (m) return { prop: m.prop, value: m.raw };
+  if (m) return { prop: m.prop, value: m.value };
   const prop = siteDefaultProp(site) === "P1343" ? "" : siteDefaultProp(site);
   return { prop, value: null };
 }
@@ -102,15 +113,16 @@ const PH = /(\{[^{}]+\})/; // {id} {first} {FIRST} or a choice group {a|b|c}
 
 function templateRegex(tpl) {
   const t = stripProto(tpl);
-  let src = "", seenId = false;
+  let src = "", groups = 0, idGroup = 0;
+  const names = [];
   for (const part of t.split(PH)) {
-    if (part === "{id}") { src += seenId ? "\\1" : "([^/?#]+)"; seenId = true; }
-    else if (part === "{first}" || part === "{FIRST}") src += "[^/?#]+";
+    if (part === "{id}") { if (idGroup) src += "\\" + idGroup; else { src += "([^/?#]+)"; idGroup = ++groups; names.push("id"); } }
+    else if (part === "{first}" || part === "{FIRST}") { src += "([^/?#]+)"; groups++; names.push("first"); }
     else if (/^\{[^{}]*\|[^{}]*\}$/.test(part)) {
       src += "(?:" + part.slice(1, -1).split("|").map(x => esc(x.trim())).join("|") + ")";
     } else src += esc(part);
   }
-  return { re: new RegExp("^" + src + "/?$", "i"), hasQuery: t.includes("?") };
+  return { re: new RegExp("^" + src + "/?$", "i"), hasQuery: t.includes("?"), names };
 }
 
 export function effectiveMatch(site) {
@@ -181,6 +193,7 @@ export function idParts(words, site) {
   const rawSep = { hyphen: "-", underscore: "_", plus: " ", space: " ", none: "" }[sk] ?? "-";
   return {
     id, raw: cased.join(rawSep),
+    rawLower: dir ?? ch.toLowerCase(),
     lower: dir ?? encodeURIComponent(ch.toLowerCase()),
     upper: dir ?? encodeURIComponent(ch.toUpperCase())
   };
@@ -240,14 +253,18 @@ export function matchTemplates(site, urlStr) {
   const path = host + u.pathname;
   let best = null;
   for (const tpl of cleanTemplates(site)) {
-    const { re, hasQuery } = templateRegex(tpl);
+    const { re, hasQuery, names } = templateRegex(tpl);
     const m = (hasQuery ? path + u.search : path).match(re);
     if (m && (!best || tpl.length > best.score)) {
-      let raw = m[1];
-      const sep = pickSep(m[1], site);
+      const idEnc = m[names.indexOf("id") + 1];
+      const fi = names.indexOf("first");
+      let first; if (fi >= 0) { first = m[fi + 1]; try { first = decodeURIComponent(first); } catch { /* keep */ } }
+      let raw = idEnc;
+      const sep = pickSep(idEnc, site);
       if (sep === "plus") raw = raw.replace(/\+/g, " ");
       try { raw = decodeURIComponent(raw); } catch { /* keep */ }
-      best = { score: tpl.length, template: tpl, raw, sep, prop: templateProp(site, tpl), words: splitWords(m[1], sep) };
+      best = { score: tpl.length, template: tpl, raw, sep, prop: templateProp(site, tpl), words: splitWords(idEnc, sep),
+        value: fillValue(valuePattern(site, tpl), { raw, first }) };   // what is stored in the ID property
     }
   }
   return best;
@@ -310,7 +327,8 @@ export function buildCandidates(sites, currentSite, ids, { perSite = 30, total =
         const k = normUrl(url);
         if (seen.has(k)) continue;
         seen.add(k); count.set(site, n + 1);
-        out.push({ site, template: tpl, url, value: parts.raw, prop: templateProp(site, tpl), sep });
+        out.push({ site, template: tpl, url, prop: templateProp(site, tpl), sep,
+          value: fillValue(valuePattern(site, tpl), { raw: parts.raw, first: parts.rawLower }) });
       }
     }
   }

@@ -12,7 +12,7 @@ const FIELDS = [
   ["separator", "f_sep", "sepset", "hyphen"], ["caseMode", "f_case", "text", "lower"], ["urlMode", "f_mode", "text", "nohash"],
   ["searchUrl", "f_searchUrl"], ["searchMode", "f_searchMode", "text", "fetch"], ["pickBy", "f_pickBy", "text", "title"],
   ["titleMatch", "f_titleMatch", "text", "equal"], ["approvePartial", "f_approvePartial", "bool"], ["language", "f_language"], ["searchScript", "f_searchScript"], ["searchMax", "f_searchMax"], ["searchRegex", "f_searchRegex"], ["searchExclude", "f_searchExclude"],
-  ["match", "f_match"], ["notFound", "f_notfound"], ["nonLetter", "f_nonletter"], ["smallWords", "f_small"]
+  ["idValue", "f_idvalue"], ["match", "f_match"], ["notFound", "f_notfound"], ["nonLetter", "f_nonletter"], ["smallWords", "f_small"]
 ];
 
 const siteLabel = s => {
@@ -104,7 +104,7 @@ function normalizeSite(s) {
   o.qid = ((s.qid || "").match(/Q\d+/i) || [""])[0].toUpperCase();
   o.idProperty = ((s.idProperty || "").match(/P\d+/i) || [""])[0].toUpperCase();
   o.templates = (s.templates || []).map(t => t.trim()).filter(Boolean);
-  for (const k of ["name", "category", "match", "notFound", "nonLetter", "smallWords", "searchUrl", "searchRegex", "searchExclude"]) o[k] = (s[k] || "").trim();
+  for (const k of ["name", "category", "match", "notFound", "nonLetter", "smallWords", "searchUrl", "searchRegex", "searchExclude", "idValue"]) o[k] = (s[k] || "").trim();
   o.searchMax = Number(s.searchMax) > 0 ? Number(s.searchMax) : "";
   o.searchScript = (s.searchScript || "").trim();
   o.language = (s.language || "").trim().toLowerCase();

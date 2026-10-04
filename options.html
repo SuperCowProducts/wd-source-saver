@@ -53,9 +53,18 @@
 
 <p>Copy a Wikidata item (<code>Q42</code>), open a page on a configured website and press <b id="shortcut">the shortcut</b>
 (<b>Alt+Shift+A</b> = this page only, <b>Alt+Shift+X</b> = stop; change them at <code>chrome://extensions/shortcuts</code>).
-Extra terms: copy <code>Q123, use of property</code> to also look for those terms.</p>
+</p>
+<p class="hint"><b>Extra terms</b> (clipboard): the item first, then terms separated by commas, semicolons or new lines – several words per term are fine, and a language tag applies to the terms after it:<br>
+<code>Q123, en: Pythagorean theorem, Pythagoras' theorem, it: teorema di Pitagora</code>.
+Terms before any tag are used for every website; a website only receives terms in its own language(s) (set below).
+Wikidata labels and aliases are never used – only the page's own ID and the extras you type.</p>
 
 <h2>Websites</h2>
+<div class="bar" style="margin-bottom:6px">
+  <label style="display:flex;gap:6px;align-items:center">Show <select id="catFilter" style="width:auto"></select></label>
+  <label style="display:flex;gap:6px;align-items:center">Sort by <select id="sortSel" style="width:auto"><option value="saved">saved order</option><option value="name">name</option><option value="cat">category, then name</option><option value="lang">language, then name</option></select></label>
+  <span id="shown" class="hint"></span>
+</div>
 <div class="bar">
   <select id="siteSel"></select>
   <button id="new">+ New</button><button id="dup">Duplicate</button><button id="del">Delete</button>
@@ -68,13 +77,20 @@ Extra terms: copy <code>Q123, use of property</code> to also look for those term
     <label>Default ID property<input id="f_idprop" placeholder="P2812" title="If the website has its own Wikidata property, the ID is saved with it instead of P1343/P2699. Can be overridden per template."></label>
     <label>Categories (comma-separated)<input id="f_category" list="cats" placeholder="math, geometry"></label>
   </div>
+  <label style="max-width:420px">Languages of this website <span class="hint">– e.g. <code>en</code> or <code>en, it</code>; empty = every language</span>
+    <input id="f_language" placeholder="en"></label>
   <datalist id="cats"></datalist>
   <label>URL templates <span class="hint">– one per line. <code>{id}</code> = the term, <code>{first}</code>/<code>{FIRST}</code> = its first letter, <code>{a|b|c}</code> = try each choice.
       Start a line with a property to save that template's ID with it (<code>P9999 https://…/Enc/{id}.html</code>); lines without one use the default ID property, or P1343 + P2699 if none; <code>P1343 https://…</code> forces the fallback.</span>
     <textarea id="f_templates" rows="3" placeholder="https://www.mathwords.com/{first}/{id}.htm"></textarea></label>
   <div class="g3" style="margin-top:8px">
-    <label>Words in the ID separated by<select id="f_sep">
-      <option value="hyphen">hyphen ( - )</option><option value="underscore">underscore ( _ )</option><option value="plus">plus ( + )</option><option value="space">space ( %20 )</option><option value="none">none (CamelCase / single token)</option></select></label>
+    <fieldset id="f_sep" style="border:1px solid var(--border);border-radius:4px;padding:2px 8px;margin:0">
+      <legend class="hint">Words in the ID separated by (tick several if the site is inconsistent)</legend>
+      <label><input type="checkbox" data-sep="hyphen">hyphen ( - )</label>
+      <label><input type="checkbox" data-sep="underscore">underscore ( _ )</label>
+      <label><input type="checkbox" data-sep="plus">plus ( + )</label>
+      <label><input type="checkbox" data-sep="space">space ( %20 )</label>
+      <label><input type="checkbox" data-sep="none">none (run together / CamelCase)</label></fieldset>
     <label>Letter case in the ID<select id="f_case">
       <option value="lower">lowercase</option><option value="capitalize">Capitalized first word</option><option value="title">Title Case Each Word</option><option value="titlesmall">Title Case, small words lowercase (of, the…)</option><option value="upper">UPPERCASE</option><option value="keep">keep as is</option></select></label>
     <label>URL to save for this page<select id="f_mode">
@@ -95,6 +111,11 @@ Extra terms: copy <code>Q123, use of property</code> to also look for those term
     <div class="g3"><label>Max results kept<input id="f_searchMax" type="number" min="1" max="20" placeholder="5"></label>
     <label>Only keep result URLs matching (regex, optional)<input id="f_searchRegex" placeholder="/topics/"></label>
     <label>Drop result URLs matching (regex, optional)<input id="f_searchExclude" placeholder="mathsisfun\.com/definitions/"></label></div>
+    <label style="margin-top:8px">Search script <span class="hint">– optional; for result pages that need clicking (runs in a background tab, so it overrides “plain request”)</span>
+      <textarea id="f_searchScript" rows="7" placeholder="click button &quot;See our Google-powered results&quot;&#10;each &quot;Videos&quot;, &quot;Articles&quot;, &quot;Programs&quot;&#10;  click text &quot;{x}&quot;&#10;  collect&#10;  pages link &quot;Page {n}&quot;"></textarea></label>
+    <div class="hint">Steps: <code>click button|link|tab|text "name" [exact]</code> · <code>collect</code> · <code>pages link "Page {n}" [max=10]</code> (clicks Page 2, 3 … until none is left) ·
+      <code>wait 1500</code> · <code>each "A", "B"</code> + indented lines (<code>{x}</code> = value) · <code>#</code> comments. Pasted Playwright lines like <code>get_by_role("button", name="…")</code> and <code>get_by_text("…")</code> also work as click steps.
+      Limits per search (Safety &amp; politeness): clicks and seconds.</div>
     <div class="hint">The query is always the item's Wikidata label (never a guessed string). Results can be wrong, so searches always go through the review window.</div>
   </details>
 
@@ -128,7 +149,12 @@ Extra terms: copy <code>Q123, use of property</code> to also look for those term
     <label>Delay between requests to one site (ms)<input type="number" min="500" id="s_hostDelayMs"></label>
     <label>Max URL guesses per site<input type="number" min="1" id="s_maxPerSite"></label>
     <label>Max URL guesses per run<input type="number" min="1" id="s_maxTotal"></label>
+    <label>Search script: max clicks per search<input type="number" min="1" max="200" id="s_scriptMaxClicks"></label>
+    <label>Search script: max seconds per search<input type="number" min="10" max="600" id="s_scriptMaxSeconds"></label>
     <label>Remember "page doesn't exist" for (days)<input type="number" min="0" id="s_missTtlDays"></label>
+  </div>
+  <div class="g4">
+    <label>maxlag when saving (seconds, 0 = off)<input type="number" min="0" max="60" id="s_maxlag" title="Sent only with edits. Raise it or set 0 as a temporary measure while Wikidata is congested; honour Retry-After either way."></label>
   </div>
   <label><input type="checkbox" id="s_related">Look for the term on related websites (same category)</label>
   <label><input type="checkbox" id="s_useHistory">Use the history log to skip statements that are already known</label>
@@ -161,6 +187,18 @@ Extra terms: copy <code>Q123, use of property</code> to also look for those term
   <p class="bar"><input id="hforget" placeholder="Q42" style="width:120px"><button id="hforgetbtn">Forget this item</button>
   <span class="hint">(use when a statement was removed on Wikidata and should be re-added)</span></p>
   <pre id="hout" hidden></pre>
+</div>
+
+<h2>Badge symbols</h2>
+<div class="card"><div id="legend" class="hint" style="display:grid;grid-template-columns:auto 1fr;gap:4px 10px;align-items:center"></div></div>
+
+<h2>Debug log</h2>
+<div class="card">
+  <p class="hint">Every run is logged step by step: the page and ID that were read, terms, every URL requested (status, time), search results, what was compared and the exact edit. The last 8 runs are kept here.</p>
+  <label><input type="checkbox" id="s_logToFile">Also save a log file after every run to <code>Downloads/WikidataSourceSaver/run-&lt;time&gt;-&lt;item&gt;.log</code> (asks for the “downloads” permission; applied with “Save all”)</label>
+  <p class="bar"><button id="logdl">Download last log</button><button id="logdlall">Download all logs</button>
+  <button id="logshow">Show last log</button><button id="logclear">Clear logs</button><span id="logmsg" class="hint"></span></p>
+  <pre id="logout" hidden style="max-height:420px"></pre>
 </div>
 
 <h2>Last run</h2>

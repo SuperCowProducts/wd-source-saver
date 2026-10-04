@@ -1,6 +1,6 @@
 import {
   normUrl, findCurrent, buildCandidates, dedupeIds, parseClipboard, checkUrl, unwrapArchive, waybackLatest,
-  tsToDate, cleanTerm, alignToTerms, cats, sharesCat, usable, searchUrl, extractLinks, pickResultsDetailed,
+  tsToDate, cleanTerm, alignToTerms, cats, sharesCat, usable, searchUrl, extractLinks, pickResultsDetailed, parseSearchScript, pageOp, langsOf, termsForSite, KINDS,
   matchTemplates, keyFor, applyUrlMode, propForUrl, siteDefaultProp,
   DEFAULTS
 } from "./lib.js";
@@ -30,6 +30,51 @@ const sleep = (ms, signal) => new Promise((res, rej) => {
 // ======================================================================
 let current = null;
 const reviews = new Map();
+
+// ---- debug log: every decision and request of a run, kept in storage (last runs) and optionally saved as a file ----
+function dlog(level, msg, data, max = 1500) {
+  if (!current?.log) return;
+  const t = ((Date.now() - current.t0) / 1000).toFixed(3).padStart(7);
+  let line = `[+${t}s] ${String(level).padEnd(5)} ${msg}`;
+  if (data !== undefined) {
+    let j;
+    try { j = typeof data === "string" ? data : JSON.stringify(data); } catch { j = String(data); }
+    if (j && j.length > max) j = j.slice(0, max) + `…(+${j.length - max} chars)`;
+    if (j) line += " " + j;
+  }
+  current.log.push(line);
+}
+
+const LOG_KEEP = 8, LOG_MAX_CHARS = 2_000_000;
+function buildLogEntry(run, outcome) {
+  const text = [
+    `=== Wikidata Source Saver ${VERSION} – ${new Date(run.t0).toISOString()} ===`,
+    `item: ${run.item || "(none)"}   result: ${outcome.title} – ${String(outcome.message).replace(/\n/g, " / ")}`,
+    "", ...run.log
+  ].join("\n");
+  return { time: new Date(run.t0).toISOString(), item: run.item || "", title: outcome.title, kind: outcome.kind, text };
+}
+async function persistLog(entry, s) {
+  try {
+    let { logs = [] } = await chrome.storage.local.get("logs");
+    logs.push(entry);
+    logs = logs.slice(-LOG_KEEP);
+    while (logs.length > 1 && logs.reduce((n, l) => n + l.text.length, 0) > LOG_MAX_CHARS) logs.shift();
+    await chrome.storage.local.set({ logs });
+  } catch (e) { console.warn("log store failed", e); }
+  if (s.logToFile) {
+    try {
+      if (!chrome.downloads || !(await chrome.permissions.contains({ permissions: ["downloads"] }))) return;
+      const b64 = btoa(unescape(encodeURIComponent(entry.text)));
+      const stamp = entry.time.replace(/[-:]/g, "").replace(/\..*/, "").replace("T", "-");
+      await chrome.downloads.download({
+        url: "data:text/plain;charset=utf-8;base64," + b64,
+        filename: `WikidataSourceSaver/run-${stamp}-${entry.item || "noitem"}.log`,
+        conflictAction: "uniquify", saveAs: false
+      });
+    } catch (e) { console.warn("log file failed", e); }
+  }
+}
 
 function renderBadge() {
   if (!current) return;
@@ -80,6 +125,7 @@ function serial(host, fn) {
 const gapFor = (host, s) => s.hostDelayMs === 0 ? 0 : (GAPS[host] ?? s.hostDelayMs);
 async function pace(host, signal) {
   const w = (nextOk.get(host) || 0) - Date.now();
+  if (w > 1500) dlog("WAIT", `${Math.round(w)} ms before the next request to ${host}`);
   if (w > 0) await sleep(w, signal);
   signal?.throwIfAborted();
 }
@@ -91,19 +137,26 @@ function paced(host) {
 function hostFetch(url, opts = {}, { noBreaker = false } = {}) {
   const host = new URL(url).hostname;
   return serial(host, async () => {
-    if (!noBreaker && current?.blocked.has(host)) throw Object.assign(new Error("blocked"), { blocked: true });
+    if (!noBreaker && current?.blocked.has(host)) {
+      dlog("WARN", `skipped ${url}: ${host} is blocked for the rest of this run`);
+      throw Object.assign(new Error("blocked"), { blocked: true });
+    }
     const { signal, timeoutMs = 15000, ...rest } = opts;
     await pace(host, signal);
     const sigs = [AbortSignal.timeout(timeoutMs)];
     if (signal) sigs.push(signal);
     let res;
-    try { res = await fetch(url, { ...rest, signal: AbortSignal.any(sigs) }); } finally { paced(host); }
+    const t0 = Date.now(), method = rest.method || "GET";
+    try { res = await fetch(url, { ...rest, signal: AbortSignal.any(sigs) }); }
+    catch (e) { dlog("HTTP", `${method} ${url} -> ERROR ${e.name}: ${e.message} (${Date.now() - t0} ms)`); throw e; }
+    finally { paced(host); }
+    dlog("HTTP", `${method} ${url} -> ${res.status} (${Date.now() - t0} ms)${res.url && res.url !== url ? " final=" + res.url : ""}`);
     if (!noBreaker && current) {
-      if ([429, 403, 503].includes(res.status)) current.blocked.add(host);
+      if ([429, 403, 503].includes(res.status)) { current.blocked.add(host); dlog("WARN", `${host} answered ${res.status}: not contacting it again in this run`); }
       else if (res.status >= 500) {
         const n = (current.strikes.get(host) || 0) + 1;
         current.strikes.set(host, n);
-        if (n >= 2) current.blocked.add(host);
+        if (n >= 2) { current.blocked.add(host); dlog("WARN", `${host} failed twice (${res.status}): not contacting it again in this run`); }
       }
     }
     return res;
@@ -116,24 +169,44 @@ function hostFetch(url, opts = {}, { noBreaker = false } = {}) {
 const UA = s => `WikidataSourceSaver/${VERSION} (browser extension, every edit user-initiated; ` +
   (s.username ? "https://www.wikidata.org/wiki/User:" + encodeURIComponent(s.username.trim().replace(/ /g, "_")) : "no contact set") + ")";
 
-async function api(params, post = false, signal) {
+async function api(params, post = false, signal, waitSignal = signal, opts = {}) {
   const s = current?.settings || DEFAULTS;
-  const body = new URLSearchParams({ format: "json", formatversion: "2", maxlag: "5", ...params });
-  if (post) body.set("assert", "user");               // never edit anonymously if the session expired
-  for (let attempt = 0; attempt < 4; attempt++) {
+  const body = new URLSearchParams({ format: "json", formatversion: "2", ...params });
+  if (post) {
+    body.set("assert", "user");                                  // never edit anonymously if the session expired
+    const ml = opts.maxlag ?? s.maxlag;
+    if (ml > 0) body.set("maxlag", String(ml));                 // reads never carry maxlag; 0 = off (Settings, or “this time only” in the lag window)
+  }
+  const k = s.hostDelayMs === 0 ? 0.01 : 1;
+  const ATTEMPTS = 3;
+  for (let attempt = 1; attempt <= ATTEMPTS; attempt++) {
     const res = await hostFetch(post ? API : `${API}?${body}`, {
       method: post ? "POST" : "GET", body: post ? body : undefined, credentials: "include",
       headers: { "Api-User-Agent": UA(s) }, timeoutMs: 20000, signal
     }, { noBreaker: true });
     const retryAfter = Number(res.headers?.get?.("Retry-After")) || 0;
-    if (res.status === 429 || res.status === 503) { await sleep((retryAfter || 5 * (attempt + 1)) * 1000, signal); continue; }
+    if (res.status === 429 || res.status === 503) {
+      if (attempt === ATTEMPTS) throw new RunError(`Wikidata answered ${res.status} (busy / rate limit) three times. Nothing was written – try again in a few minutes.`, "lag");
+      const w = Math.min(30, retryAfter || 5 * attempt);
+      dlog("WARN", `Wikidata ${res.status}: waiting ${w}s (attempt ${attempt}/${ATTEMPTS})`);
+      setStage(`Wikidata busy (${res.status}) – waiting ${w}s`);
+      await sleep(w * 1000 * k, waitSignal); continue;
+    }
     const data = await res.json();
-    if (data.error?.code === "maxlag") { await sleep(((retryAfter || data.error.lag || 5) + 1) * 1000, signal); continue; }
-    if (data.error?.code === "assertuserfailed") throw new Error("You're not logged in to Wikidata. Log in, then try again.");
-    if (data.error) throw new Error(data.error.info || data.error.code);
+    if (data.error?.code === "maxlag") {
+      if (attempt === ATTEMPTS) {
+        throw Object.assign(new RunError(`Wikidata reports replication lag (maxlag ${opts.maxlag ?? s.maxlag}s): ${data.error.info || ""} Nothing was written. Try again later, or raise/disable “maxlag” in Settings → Safety & politeness if you accept editing during lag.`, "lag"),
+          { maxlag: true, lag: data.error.lag, info: data.error.info || "" });
+      }
+      const w = Math.min(30, (retryAfter || data.error.lag || 5) + 1);
+      dlog("WARN", `maxlag: Wikidata is ${data.error.lag ?? "?"}s behind; waiting ${w}s (attempt ${attempt}/${ATTEMPTS})`);
+      setStage(`Wikidata lagging – waiting ${w}s before saving`);
+      await sleep(w * 1000 * k, waitSignal); continue;
+    }
+    if (data.error?.code === "assertuserfailed") throw new RunError("You're not logged in to Wikidata. Log in, then try again.", "login");
+    if (data.error) { dlog("ERROR", `Wikidata API error for ${params.action}`, data.error); throw new RunError(data.error.info || data.error.code, "api"); }
     return data;
   }
-  throw new Error("Wikidata is busy (replication lag / rate limit). Nothing was written – try again in a few minutes.");
 }
 
 async function getCsrf(signal) {
@@ -141,17 +214,9 @@ async function getCsrf(signal) {
   const t = d.query.tokens.csrftoken;
   if (t === "+\\") {
     chrome.tabs.create({ url: "https://www.wikidata.org/w/index.php?title=Special:UserLogin" });
-    throw new Error("You're not logged in to Wikidata. Log in, then try again.");
+    throw new RunError("You're not logged in to Wikidata. Log in, then try again.", "login");
   }
   return t;
-}
-
-async function fetchTerms(item, s, signal) {
-  const lang = s.labelLang || "en";
-  const d = await api({ action: "wbgetentities", ids: item, props: "labels|aliases", languages: lang, languagefallback: "1" }, false, signal);
-  const e = d.entities?.[item] || {};
-  const raw = e.labels?.[lang]?.value || Object.values(e.labels || {})[0]?.value || "";
-  return { label: cleanTerm(raw), aliases: (e.aliases?.[lang] || []).map(a => cleanTerm(a.value)).filter(Boolean).slice(0, 3), raw };
 }
 
 // ======================================================================
@@ -273,7 +338,7 @@ async function commit(item, plan, chosen, s, signal) {
   const { editTimes = [], lastEdit = 0 } = await chrome.storage.local.get(["editTimes", "lastEdit"]);
   const recent = editTimes.filter(t => now0 - t < 3600e3);
   if (recent.length >= s.maxEditsPerHour) {
-    throw new Error(`Hourly edit limit reached (${s.maxEditsPerHour}/hour – see Settings). Nothing was written; try again later.`);
+    throw new RunError(`Hourly edit limit reached (${s.maxEditsPerHour}/hour – see Settings). Nothing was written; try again later.`, "cap");
   }
   const wait = lastEdit + s.minEditInterval * 1000 - now0;
   for (let left = Math.ceil(wait / 1000); left > 0; left--) {
@@ -296,19 +361,41 @@ async function commit(item, plan, chosen, s, signal) {
   for (const entries of groups.values()) claims.push(newGroupClaim(entries));
   claims.push(...mods.values());
 
+  dlog("EDIT", `one edit on ${item}: ${chosen.length} change(s)`, claims, 8000);
   setStage("saving to Wikidata…");
   const token = await getCsrf(signal);
   signal.throwIfAborted();
   const summary = `Add ${chosen.length > 1 ? chosen.length + " sources/identifiers" : "source/identifier"} (via Wikidata Source Saver, user-initiated)`;
-  await api({ action: "wbeditentity", id: item, data: JSON.stringify({ claims }), token, summary }, true); // no signal: once sent, it completes
+  const editParams = { action: "wbeditentity", id: item, data: JSON.stringify({ claims }), token, summary };
+  let lagNow = s.maxlag;                       // this edit only – the saved setting is never changed here
+  for (;;) {
+    try {
+      await api(editParams, true, undefined, signal, { maxlag: lagNow });   // the POST itself is never aborted; waiting for maxlag can be
+      break;
+    } catch (e) {
+      if (!(e.kind === "lag" && e.maxlag)) throw e;
+      // Everything is collected and ready – don't throw it away because of replication lag: let the user decide.
+      setStage("waiting for your decision – Wikidata is lagging…");
+      dlog("WARN", "save blocked by maxlag; asking the user", { lag: e.lag, maxlag: lagNow });
+      const choice = await askReview({ kind: "lag", item, maxlag: lagNow, lag: e.lag ?? null, info: e.info || "",
+        rows: chosen.map(p => describe(p.entry)) }, "lag.html", [560, 560]);
+      signal.throwIfAborted();
+      dlog("WARN", `lag decision: ${choice}`);
+      if (choice === "off") lagNow = 0;           // retry this one save without maxlag
+      else if (choice === "retry") continue;      // another round with the same maxlag
+      else throw e;                               // cancelled / window closed: nothing written
+      setStage("saving to Wikidata (maxlag off, this time only)…");
+    }
+  }
   const t = Date.now();
+  dlog("EDIT", "saved");
   await chrome.storage.local.set({ lastEdit: t, editTimes: [...recent, t] });
 }
 
 // ======================================================================
 // human review window
 // ======================================================================
-function askReview(payload) {
+function askReview(payload, page = "review.html", size = [780, 700]) {
   return new Promise(async resolve => {
     const id = crypto.randomUUID();
     const rec = { payload, resolve };
@@ -316,7 +403,7 @@ function askReview(payload) {
     const timer = setTimeout(() => { if (reviews.delete(id)) { resolve(null); if (rec.winId) chrome.windows.remove(rec.winId).catch(() => {}); } }, 15 * 60e3);
     rec.resolve = v => { clearTimeout(timer); resolve(v); };
     try {
-      const win = await chrome.windows.create({ url: chrome.runtime.getURL("review.html?id=" + id), type: "popup", width: 780, height: 700 });
+      const win = await chrome.windows.create({ url: chrome.runtime.getURL(page + "?id=" + id), type: "popup", width: size[0], height: size[1] });
       rec.winId = win?.id;
     } catch { reviews.delete(id); resolve(null); }
   });
@@ -338,19 +425,24 @@ chrome.runtime.onMessage.addListener((msg, _sender, send) => {
 // ======================================================================
 // notifications
 // ======================================================================
-const LEVELS = {
-  ok:    { color: "#2e7d32", textColor: "#ffffff", ms: 4000 },
-  warn:  { color: "#fbc02d", textColor: "#000000", ms: 6000 },
-  error: { color: "#c62828", textColor: "#ffffff", ms: 5000 }
-};
-function notify(title, message, level = "ok", badge) {
-  const l = LEVELS[level] || LEVELS.ok;
-  chrome.notifications.create({ type: "basic", iconUrl: "icons/icon128.png", title, message });
-  chrome.action.setBadgeBackgroundColor({ color: l.color });
-  if (chrome.action.setBadgeTextColor) chrome.action.setBadgeTextColor({ color: l.textColor });
-  chrome.action.setBadgeText({ text: badge || (level === "ok" ? "✓" : level === "warn" ? "=" : "!") });
+class RunError extends Error { constructor(msg, kind) { super(msg); this.kind = kind; } }
+function classify(e) {
+  if (e?.kind) return e.kind;
+  if (e?.name === "AbortError") return "stopped";
+  if (e instanceof TypeError || e?.name === "TimeoutError" || /Failed to fetch|NetworkError|network/i.test(e?.message || "")) return "net";
+  return "error";
+}
+
+// outcome = { kind, title?, message }; kind picks the symbol and colour
+function notify(outcome) {
+  const k = KINDS[outcome.kind] || KINDS.error;
+  const badge = outcome.badge || k.badge;
+  chrome.notifications.create({ type: "basic", iconUrl: "icons/icon128.png", title: `${badge}  ${outcome.title || k.label}`, message: outcome.message || k.label });
+  chrome.action.setBadgeBackgroundColor({ color: k.color });
+  if (chrome.action.setBadgeTextColor) chrome.action.setBadgeTextColor({ color: k.text });
+  chrome.action.setBadgeText({ text: badge });
   clearTimeout(notify._t);
-  notify._t = setTimeout(() => chrome.action.setBadgeText({ text: "" }), l.ms);
+  notify._t = setTimeout(() => chrome.action.setBadgeText({ text: "" }), k.ms);
 }
 
 // ======================================================================
@@ -380,7 +472,9 @@ const hasPerm = async host => chrome.permissions.contains({ origins: [`*://${hos
 
 async function lookupArchive(url, signal) {
   if (!(await hasPerm("web.archive.org"))) return { found: false, error: true, noPerm: true };
-  return waybackLatest(url, hostFetch, signal);
+  const r = await waybackLatest(url, hostFetch, signal);
+  dlog("ARCH", `${url} -> ${r.found ? r.url : r.error ? "lookup failed" : "no snapshot"}`);
+  return r;
 }
 
 async function checkWithPermission(c, s, signal) {
@@ -412,17 +506,96 @@ function waitTabComplete(tabId, ms, signal) {
   });
 }
 
+// Runs a parsed search script in an already loaded tab: clicks, pagination, collecting links.
+// Every action is a separate executeScript call, so clicks that navigate to a new page keep working.
+export async function runSearchScript(tabId, steps, site, signal, s, host) {
+  const k = s.hostDelayMs === 0 ? 0.01 : 1;                    // (tests run without delays)
+  const ctx = { links: new Map(), notes: [], clicks: 0, deadline: Date.now() + s.scriptMaxSeconds * 1000 };
+  const label = labelOf(site);
+  const op = async (name, a) => {
+    try { const [r] = await chrome.scripting.executeScript({ target: { tabId }, func: pageOp, args: [name, a || {}] }); return r?.result; }
+    catch (e) { if (signal.aborted) throw e; dlog("SCRIPT", `${name} failed: ${e.message}`); return null; }
+  };
+  const limit = () => {
+    if (Date.now() > ctx.deadline) { if (!ctx.notes.includes("time limit reached")) ctx.notes.push("time limit reached"); return true; }
+    if (ctx.clicks >= s.scriptMaxClicks) { if (!ctx.notes.includes("click limit reached")) ctx.notes.push("click limit reached"); return true; }
+    return false;
+  };
+  const collect = async () => {
+    const before = ctx.links.size;
+    for (const l of (await op("collect")) || []) if (!ctx.links.has(l.href) && ctx.links.size < 3000) ctx.links.set(l.href, l);
+    dlog("SCRIPT", `collect: +${ctx.links.size - before} new links (${ctx.links.size} total)`);
+    return ctx.links.size - before;
+  };
+  const settle = async () => {                                  // let the click take effect: navigation, then dynamic content
+    await sleep(900 * k, signal);
+    for (let i = 0; i < 20; i++) { const t = await chrome.tabs.get(tabId); if (t.status === "complete") break; await sleep(500 * k, signal); }
+    let last = -1;
+    for (let i = 0; i < 5; i++) { const n = ((await op("collect")) || []).length; if (n === last) break; last = n; await sleep(700 * k, signal); }
+  };
+  const sub = (t, v) => t.replace(/\{x\}/g, v.x ?? "").replace(/\{n\}/g, v.n ?? "");
+  const click = async (kind, name, exact) => {
+    if (limit()) return null;
+    setStage(`searching ${label}… click ${kind} “${name}”`);
+    await pace(host, signal);
+    ctx.clicks++;
+    const r = await op("click", { kind, name, exact });
+    paced(host);
+    dlog("SCRIPT", `click ${kind} "${name}" -> ${r?.ok ? "clicked" : "not found"}`);
+    if (r?.ok) await settle();
+    return !!r?.ok;
+  };
+  const run = async (list, vars) => {
+    for (const st of list) {
+      signal.throwIfAborted();
+      if (limit()) return "stop";
+      if (st.op === "click") {
+        const name = sub(st.name, vars), ok = await click(st.kind, name, st.exact);
+        if (ok === null) return "stop";
+        if (!ok) { ctx.notes.push(`not found: ${st.kind} "${name}"`); if (vars.inEach) return "skip"; }
+      } else if (st.op === "collect") await collect();
+      else if (st.op === "wait") await sleep(st.ms * k, signal);
+      else if (st.op === "pages") {
+        let stalls = 0;
+        for (let n = 2; n <= st.max; n++) {
+          const ok = await click(st.kind, sub(st.tpl, { ...vars, n }), true);
+          if (ok === null) return "stop";
+          if (!ok) break;                                       // no such page link: that was the last page
+          stalls = (await collect()) === 0 ? stalls + 1 : 0;
+          if (stalls >= 2) { ctx.notes.push("pagination stopped: two pages in a row had no new links"); break; }
+        }
+      } else if (st.op === "each") {
+        for (const x of st.values) { if ((await run(st.body, { ...vars, x, inEach: true })) === "stop") return "stop"; }
+      }
+    }
+    return "ok";
+  };
+  await collect();
+  await run(steps, {});
+  dlog("SCRIPT", `done: ${ctx.clicks} clicks, ${ctx.links.size} links${ctx.notes.length ? ", notes: " + ctx.notes.join("; ") : ""}`);
+  return { links: [...ctx.links.values()], notes: ctx.notes };
+}
+
 // Result links of a site's own search page. "fetch" = plain request; "tab" = render in a background tab (JS-driven sites)
 async function fetchSearchLinks(site, url, signal) {
   const host = new URL(url).hostname;
   if (!(await hasPerm(host))) throw new Error("no permission – open settings and press Save");
-  if (site.searchMode === "tab") {
+  if (site.searchMode === "tab" || (site.searchScript || "").trim()) {
     return serial(host, async () => {
       if (current?.blocked.has(host)) throw Object.assign(new Error("blocked"), { blocked: true });
       await pace(host, signal);
       const tab = await chrome.tabs.create({ url, active: false });
       try {
         await waitTabComplete(tab.id, 20000, signal);
+        const script = (site.searchScript || "").trim();
+        if (script) {
+          let steps;
+          try { steps = parseSearchScript(script); } catch (e) { throw new Error("search script, " + e.message); }
+          await sleep((current?.settings?.hostDelayMs === 0 ? 10 : 1500), signal);
+          const r = await runSearchScript(tab.id, steps, site, signal, current?.settings || DEFAULTS, host);
+          const out = r.links; out.notes = r.notes;
+          return out;
+        }
         let links = [];
         for (let i = 0; i < 6; i++) {
           await sleep(i === 0 ? 1500 : 1200, signal);
@@ -477,7 +650,7 @@ async function mapPool(items, size, fn) {
 // the run
 // ======================================================================
 async function runInner(tab, only, s, signal) {
-  if (!tab?.url || !/^https?:/.test(tab.url)) throw new Error("This page can't be used (not an http/https page).");
+  if (!tab?.url || !/^https?:/.test(tab.url)) throw new RunError("This page can't be used (not an http/https page).", "page");
   const un = unwrapArchive(tab.url);
   const href = un ? un.original : tab.url;
 
@@ -486,33 +659,40 @@ async function runInner(tab, only, s, signal) {
   if (!cur) {
     const host = new URL(href).hostname.replace(/^www\./, "");
     await chrome.tabs.create({ url: chrome.runtime.getURL("options.html?add=" + encodeURIComponent(host)) });
-    throw new Error(`No Wikidata item configured for ${host}. Opened settings so you can add it.`);
+    throw new RunError(`No Wikidata item configured for ${host}. Opened settings so you can add it.`, "config");
   }
   const site = cur.site;
   const url = await pageUrl(tab, site, href, !!un);
+  dlog("INFO", `page ${tab.url}${un ? " (web.archive.org snapshot of " + href + ")" : ""}`);
+  dlog("INFO", `matched website "${labelOf(site)}"`, { qid: site.qid, idProperty: site.idProperty, categories: cats(site), separator: site.separator, caseMode: site.caseMode, archive: !!site.archive });
+  dlog("INFO", "ID read from the URL", cur.extracted ? { template: cur.extracted.template, raw: cur.extracted.raw, words: cur.extracted.words, sep: cur.extracted.sep, prop: cur.extracted.prop } : "(page doesn't match a template)");
+  dlog("INFO", `URL that will be saved: ${url}`);
 
   setStage("reading clipboard…");
   const parsed = parseClipboard((await readClipboard()) || "");
-  if (!parsed) throw new Error("No Wikidata item (Qxxx) found in the clipboard.");
+  if (!parsed) throw new RunError("The clipboard must start with a Wikidata item – Q123 or a wikidata.org/wiki/Q123 URL – optionally followed by extra terms (Q123, en: some term, it: un termine).", "clipboard");
   const item = parsed.item;
+  current.item = item;
+  dlog("INFO", "clipboard", { item, extras: parsed.extras.map(e => e.text) });
 
   const { history, misses } = await loadHistory(s);
   const known = s.useHistory ? (history.items[item] || {}) : {};
   const isKnown = (key, archiveWanted) => { const r = known[key]; return !!r && (!archiveWanted || r.a); };
 
-  // --- terms: ONLY from Wikidata (label/aliases), the clipboard and the page's own ID. Nothing is guessed. ---
-  setStage("reading the item's label from Wikidata…");
-  let terms = { label: null, aliases: [] };
-  try { terms = await fetchTerms(item, s, signal); } catch (e) { if (signal.aborted) throw e; }
-  const extras = parsed.extras; // already validated by parseClipboard
-  let searchTerms = [terms.label, ...terms.aliases, ...extras].filter(Boolean);
-  const ambiguous = (site.separator || "hyphen") === "none";
-  const pageWords = cur.extracted ? (ambiguous ? alignToTerms(cur.extracted, searchTerms) : cur.extracted.words) : null;
-  if (!searchTerms.length && pageWords) searchTerms = [{ text: pageWords.join(" "), words: pageWords }];
-  const ids = dedupeIds([
-    ...(pageWords ? [{ words: pageWords }] : []),
-    ...[terms.label, ...terms.aliases.slice(0, 2), ...extras].filter(Boolean).map(t => ({ words: t.words }))
-  ]);
+  // --- terms: ONLY the page's own ID and the extras you typed. Wikidata labels/aliases are never used. ---
+  const extras = parsed.extras;                                        // [{text, words, lang}] (validated by parseClipboard)
+  const pageLang = langsOf(site)[0] || "";
+  let pageWords = null;
+  if (cur.extracted) {
+    const ambiguous = cur.extracted.sep === "none";                    // run-together ID: only your extras can say where the words split
+    pageWords = (ambiguous && alignToTerms(cur.extracted, termsForSite(extras, site))) || cur.extracted.words;
+  }
+  const pageTerm = pageWords ? { text: pageWords.join(" "), words: pageWords, lang: pageLang } : null;
+  const searchTerms = [pageTerm, ...extras].filter(Boolean);
+  const ids = dedupeIds(searchTerms.map(t => ({ words: t.words, lang: t.lang })));
+
+  dlog("INFO", "terms (page ID + your extras)", searchTerms.map(t => `${t.lang || "*"}: ${t.text}`));
+  dlog("INFO", "words used to build URLs", ids.map(i => `${i.lang || "*"}: ${i.words.join(" ")}`));
 
   // --- the current page ---
   let archive = null;
@@ -536,11 +716,13 @@ async function runInner(tab, only, s, signal) {
       if (misses[c.url]) return false;
       return true;
     });
+    dlog("INFO", `${cands.length} URL guesses (after skipping the current page, history and cached misses)`, cands.map(c => `${c.site.name || c.site.qid}${c.prop ? " [" + c.prop + "]" : ""} ${c.url}`), 6000);
     const searchSites = sites.filter(x => usable(x) && x.searchUrl && sharesCat(site, x));
-    const queries = [...new Map(searchTerms.slice(0, 2).map(t => [t.text.toLowerCase(), t])).values()].slice(0, 1 + (extras.length ? 1 : 0));
+    // at most two queries per website, from the terms in that website's language(s)
+    const queriesFor = x => [...new Map(termsForSite(searchTerms, x).map(t => [t.text.toLowerCase(), t])).values()].slice(0, 2);
     const tasks = [
       ...cands.map(c => ({ kind: "check", c })),
-      ...searchSites.flatMap(x => queries.map(q => ({ kind: "search", x, q })))
+      ...searchSites.flatMap(x => queriesFor(x).map(q => ({ kind: "search", x, q })))
     ];
     let done = 0;
     setStage("checking related websites…", 0, tasks.length);
@@ -559,6 +741,7 @@ async function runInner(tab, only, s, signal) {
         if (t.kind === "check") {
           setStage(`checking ${labelOf(t.c.site)}… (${done + 1}/${tasks.length})`);
           const r = await resolveCandidate(t.c, s, signal);
+          dlog("CHECK", `${t.c.url} -> ${r.found ? "FOUND" + (r.viaArchive ? " (archive only)" : "") : "no: " + r.reason}`);
           const key = t.c.site.name + "|" + t.c.template;
           if (r.found) { foundKeys.add(key); addFound(t.c, r); }
           else {
@@ -572,7 +755,10 @@ async function runInner(tab, only, s, signal) {
           let links;
           try { links = await fetchSearchLinks(t.x, sUrl, signal); }
           catch (e) { if (signal.aborted) throw e; skipped.push({ label: labelOf(t.x), url: sUrl, reason: "search failed: " + (e.blocked ? "host rate-limited/blocking" : e.message) }); return; }
-          const picks = pickResultsDetailed(links, t.x, searchTerms, sUrl);
+          if (links.notes?.length) skipped.push({ label: labelOf(t.x), url: sUrl, reason: "search script: " + links.notes.join("; ") });
+          const picks = pickResultsDetailed(links, t.x, termsForSite(searchTerms, t.x), sUrl);
+          dlog("SRCH", `${sUrl}: ${links.length} links on the page; first 40`, links.slice(0, 40).map(l => `${l.text.slice(0, 60)} | ${l.href}`), 5000);
+          dlog("SRCH", `kept ${picks.length}`, picks);
           if (!picks.length) skipped.push({ label: labelOf(t.x), url: sUrl, reason: "search found no matching result" });
           for (const { url: pu, exact } of picks) {
             const { prop, value } = propForUrl(t.x, pu);
@@ -594,6 +780,7 @@ async function runInner(tab, only, s, signal) {
   // --- compare with the item ---
   let plan = [];
   if (entries.length) { setStage("comparing with the item on Wikidata…"); plan = await planSources(item, entries, signal); }
+  dlog("PLAN", `${plan.length} entries compared with ${item}`, plan.map(p => `${p.status}${p.group ? " (shared P1343)" : ""}: ${describe(p.entry)}`), 5000);
   const fresh = plan.filter(p => p.status !== "exists");
   const present = plan.filter(p => p.status === "exists");
 
@@ -605,7 +792,7 @@ async function runInner(tab, only, s, signal) {
   if (needReview) {
     setStage("waiting for your review…");
     const sel = await askReview({
-      item, itemLabel: terms.raw || "", maxPerEdit: s.maxPerEdit,
+      item, itemLabel: "", maxPerEdit: s.maxPerEdit,
       rows: fresh.map(p => ({ id: p.id, label: p.entry.label, text: p.entry.property ? `${p.entry.property}: ${p.entry.value}` : p.entry.url,
         archive: p.entry.archive?.date || null, viaSearch: !!p.entry.viaSearch, needsApproval: !!p.entry.needsApproval, viaArchive: !!p.entry.viaArchive,
         note: p.status === "archive-added" ? "adds the archive URL to an existing statement"
@@ -614,6 +801,7 @@ async function runInner(tab, only, s, signal) {
       present: present.map(p => describe(p.entry)), skipped: skipped.length
     });
     signal.throwIfAborted();
+    dlog("REVIEW", sel === null ? "cancelled / closed" : `approved ${sel.length} of ${fresh.length}`, sel);
     if (sel === null) cancelled = true;
     else chosen = fresh.filter(p => sel.includes(p.id));
   }
@@ -632,6 +820,7 @@ async function runInner(tab, only, s, signal) {
   if (!cancelled) chosen.forEach(p => rec(p, "pushed"));
   present.forEach(p => rec(p, "present"));
   await saveHistory(history, misses);
+  dlog("INFO", `history: ${chosen.length && !cancelled ? chosen.length : 0} pushed, ${present.length} present, ${Object.keys(misses).length} cached misses`);
 
   // --- report ---
   const lines = [
@@ -653,30 +842,47 @@ async function runInner(tab, only, s, signal) {
     skipped.length ? `– ${skipped.length} skipped/not found` : null
   ].filter(Boolean).join("\n");
 
-  if (cancelled) return { level: "warn", title: "Cancelled", message: "Review cancelled – nothing was written.", badge: "■" };
-  if (chosen.length) return { level: "ok", title: `Saved ${chosen.length} source${chosen.length > 1 ? "s" : ""} on ${item}`, message: msg, badge: "+" + chosen.length };
-  return { level: "warn", title: "⚠ Already on Wikidata – nothing changed", message: msg || "Nothing new.", badge: "=" };
+  if (cancelled) return { kind: "cancelled", message: "Review cancelled – nothing was written." };
+  const trouble = (current?.blocked.size || 0) > 0 || skipped.some(n => /timeout|network error|rate-limited|blocking|failed|HTTP 5|HTTP 403|HTTP 429/.test(n.reason));
+  const noPerm = skipped.some(n => /no permission/.test(n.reason));
+  if (chosen.length) {
+    return { kind: trouble ? "partial" : "ok", badge: "+" + chosen.length + (trouble ? "!" : ""),
+      title: `${trouble ? "+" + chosen.length + "!  Saved with problems" : "Saved " + chosen.length + " source" + (chosen.length > 1 ? "s" : "")} on ${item}`, message: msg };
+  }
+  if (present.length || knownLines.length) return { kind: "present", message: msg || "Nothing new." };
+  if ((current?.blocked.size || 0) > 0) return { kind: "blocked", message: msg + "\nBlocked: " + [...current.blocked].join(", ") };
+  if (noPerm) return { kind: "perm", message: "Open Settings and press “Save all” to give the extension access to the websites in your templates/search URLs.\n" + msg };
+  if (trouble) return { kind: "net", message: msg };
+  return { kind: "nothing", message: msg || "No matching pages were found on the related websites." };
 }
 
 export async function run(tab, { only = false } = {}) {
   if (current) return; // a run is already in progress: ignore (the lock is taken synchronously, before any await)
   current = { abort: new AbortController(), stage: "starting…", done: 0, total: 0, dot: 0, startedAt: Date.now(),
-    settings: DEFAULTS, blocked: new Set(), strikes: new Map() };
+    settings: DEFAULTS, blocked: new Set(), strikes: new Map(), log: [], t0: Date.now(), item: "" };
   const mine = current;
   startIndicators(); setStage("starting…");
   const signal = mine.abort.signal;
   let outcome;
   try {
     mine.settings = await getSettings();
+    dlog("INFO", `run started (this page only: ${only})`);
+    dlog("INFO", "settings", { ...mine.settings, username: mine.settings.username ? "(set)" : "" });
     if (!tab) [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     signal.throwIfAborted();
     outcome = await runInner(tab, only, mine.settings, signal);
   } catch (e) {
-    outcome = (e.name === "AbortError" || signal.aborted)
-      ? { level: "warn", title: "Stopped", message: "Stopped – nothing more was written.", badge: "■" }
-      : { level: "error", title: "Wikidata Source Saver", message: String(e.message || e) };
-  } finally { endRun(); }
-  notify(outcome.title, outcome.message, outcome.level, outcome.badge);
+    dlog("ERROR", e?.stack || String(e));
+    const kind = signal.aborted ? "stopped" : classify(e);
+    outcome = kind === "stopped" ? { kind, message: "Stopped – nothing more was written." }
+      : { kind, message: String(e.message || e) };
+  }
+  outcome.title = outcome.title || (KINDS[outcome.kind] || KINDS.error).label;
+  dlog("INFO", `outcome [${outcome.kind}]: ${outcome.title} – ${String(outcome.message).replace(/\n/g, " / ")}`);
+  const entry = buildLogEntry(mine, outcome);
+  endRun();
+  await persistLog(entry, mine.settings);
+  notify(outcome);
 }
 
 chrome.commands.onCommand.addListener(async (cmd, tab) => {

@@ -8,6 +8,10 @@ export const DEFAULTS = {
   minEditInterval: 60,     // seconds between edits (Wikimedia: unflagged bots should stay below 1 edit/minute)
   maxEditsPerHour: 30,
   useHistory: true, missTtlDays: 14,
+  maxlag: 5,               // seconds; sent ONLY with edits (reads never need it). 0 = off – a temporary strategy while Wikidata is congested
+  scriptMaxClicks: 60,     // search scripts: hard limits per search
+  scriptMaxSeconds: 180,
+  logToFile: false,        // also save a .log file to Downloads after every run (needs the optional 'downloads' permission)
   hostDelayMs: 1200,       // minimum gap between two requests to the same website
   maxPerSite: 30, maxTotal: 90
 };
@@ -57,6 +61,17 @@ export function propForUrl(site, url) {
   const prop = siteDefaultProp(site) === "P1343" ? "" : siteDefaultProp(site);
   return { prop, value: null };
 }
+
+// ---------- languages ----------
+// Terms may carry a language (clipboard:  "Q123, en: Pythagorean theorem, it: teorema di Pitagora"); a website may
+// declare the languages it serves ("en, it"). No language on either side = no restriction.
+export const langsOf = site => String(site.language || "").split(/[,\s;]+/).map(x => x.toLowerCase()).filter(Boolean);
+const primary = l => String(l || "").toLowerCase().split("-")[0];
+export const langOk = (term, site) => {
+  const ls = langsOf(site);
+  return !term.lang || !ls.length || ls.some(l => primary(l) === primary(term.lang));
+};
+export const termsForSite = (terms, site) => terms.filter(t => langOk(t, site));
 
 // ---------- text helpers ----------
 // Case-, accent- and punctuation-insensitive form of a text (ß->ss, Æ->ae, Ł->l …)
@@ -109,6 +124,22 @@ export function effectiveMatch(site) {
 }
 export const siteHost = site => effectiveMatch(site).split("/")[0];
 
+// A site may be inconsistent (investopedia: incomestatement vs income-statement): "none,hyphen" tries both.
+export const sepList = site => {
+  const l = String(site.separator || "hyphen").split(/[,\s]+/).filter(x => x in SEPARATORS);
+  return l.length ? [...new Set(l)] : ["hyphen"];
+};
+const SEP_CHAR = { hyphen: "-", underscore: "_", plus: "+" };
+// which of the site's separators does this particular ID use?
+export function pickSep(raw, site) {
+  const l = sepList(site);
+  for (const k of l) {
+    if (k === "none") continue;
+    if (k === "space" ? /(%20|\s)/i.test(raw) : raw.includes(SEP_CHAR[k])) return k;
+  }
+  return l.includes("none") ? "none" : l[0];
+}
+
 export function splitWords(raw, sepKey) {
   if (sepKey === "none") {
     let d = raw;
@@ -142,11 +173,12 @@ function applyCase(words, mode, small = new Set()) {
 // Encoded ID plus raw ID and first letter (for templates like /terms/{first}/{id}.asp)
 export function idParts(words, site) {
   const cased = applyCase(words, site.caseMode || "lower", smallSet(site));
-  const sep = SEPARATORS[site.separator || "hyphen"] ?? "-";
+  const sk = sepList(site)[0];
+  const sep = SEPARATORS[sk] ?? "-";
   const id = cased.map(encodeURIComponent).join(sep);
   const ch = (cased[0] || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").charAt(0);
   const dir = /\p{L}/u.test(ch) ? null : ((site.nonLetter || "").trim() || null);
-  const rawSep = { hyphen: "-", underscore: "_", plus: " ", space: " ", none: "" }[site.separator || "hyphen"] ?? "-";
+  const rawSep = { hyphen: "-", underscore: "_", plus: " ", space: " ", none: "" }[sk] ?? "-";
   return {
     id, raw: cased.join(rawSep),
     lower: dir ?? encodeURIComponent(ch.toLowerCase()),
@@ -212,9 +244,10 @@ export function matchTemplates(site, urlStr) {
     const m = (hasQuery ? path + u.search : path).match(re);
     if (m && (!best || tpl.length > best.score)) {
       let raw = m[1];
-      if (site.separator === "plus") raw = raw.replace(/\+/g, " ");
+      const sep = pickSep(m[1], site);
+      if (sep === "plus") raw = raw.replace(/\+/g, " ");
       try { raw = decodeURIComponent(raw); } catch { /* keep */ }
-      best = { score: tpl.length, template: tpl, raw, prop: templateProp(site, tpl), words: splitWords(m[1], site.separator || "hyphen") };
+      best = { score: tpl.length, template: tpl, raw, sep, prop: templateProp(site, tpl), words: splitWords(m[1], sep) };
     }
   }
   return best;
@@ -257,7 +290,7 @@ export function dedupeIds(ids) {
   const seen = new Set();
   return ids.filter(i => {
     if (!i.words.length) return false;
-    const k = i.words.join(" ").toLowerCase();
+    const k = (i.lang || "") + "|" + i.words.join(" ").toLowerCase();
     if (seen.has(k)) return false;
     seen.add(k); return true;
   });
@@ -268,16 +301,16 @@ export function buildCandidates(sites, currentSite, ids, { perSite = 30, total =
   if (!cats(currentSite).length) return [];
   const out = [], seen = new Set(), count = new Map();
   for (const id of ids) for (const site of sites) {
-    if (!usable(site) || !sharesCat(currentSite, site)) continue;
-    for (const words of termForms(id.words, site)) {
-      const parts = idParts(words, site);
+    if (!usable(site) || !sharesCat(currentSite, site) || !langOk(id, site)) continue;
+    for (const sep of sepList(site)) for (const words of termForms(id.words, site)) {
+      const parts = idParts(words, { ...site, separator: sep });
       for (const tpl of cleanTemplates(site)) for (const url of buildUrls(tpl, parts)) {
         const n = count.get(site) || 0;
         if (n >= perSite || out.length >= total) continue;
         const k = normUrl(url);
         if (seen.has(k)) continue;
         seen.add(k); count.set(site, n + 1);
-        out.push({ site, template: tpl, url, value: parts.raw, prop: templateProp(site, tpl) });
+        out.push({ site, template: tpl, url, value: parts.raw, prop: templateProp(site, tpl), sep });
       }
     }
   }
@@ -303,21 +336,27 @@ export function originsFor(sites) {
 
 // ---------- clipboard ----------
 // The clipboard must START with the item: "Q123" or a Wikidata URL (…/wiki/Q123, …/entity/Q123).
-// Optional extra terms may follow, separated by commas or new lines: "Q123, use of property, possession".
-// Anything that is not a plain short phrase (JSON, URLs, symbols…) is ignored, and text that does not start
-// with an item is rejected outright – a Q-id buried in some pasted text is never used.
+// Optional extra terms follow, separated by commas, semicolons or new lines. Multi-word terms are fine, and a
+// language tag ("it:") applies to itself and to the untagged terms after it, until the next tag:
+//     Q123, en: Pythagorean theorem, Pythagoras' theorem, it: teorema di Pitagora
+// Terms before any tag have no language (all websites use them). Anything that is not a plain short phrase
+// (JSON, URLs, symbols…) is ignored; text that does not start with an item is rejected outright.
 export function parseClipboard(text) {
   const t = String(text || "").trim();
-  if (!t || t.length > 400) return null;
+  if (!t || t.length > 600) return null;
   const m = t.match(/^(?:https?:\/\/(?:www\.|m\.)?wikidata\.org\/(?:wiki|entity)\/)?(Q\d+)(?![\w])[^\s,;]*/i);
   if (!m) return null;
   const extras = [];
+  let lang = "";
   for (const piece of t.slice(m[0].length).split(/[,;\n\r]+/)) {
-    const term = cleanTerm(piece.trim().replace(/^["'“”]+|["'“”]+$/g, ""));
-    if (term && !extras.some(e => e.text.toLowerCase() === term.text.toLowerCase())) extras.push(term);
-    if (extras.length >= 5) break;
+    let p = piece.trim();
+    const tag = p.match(/^([A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})?)\s*:\s*(.*)$/);
+    if (tag) { lang = tag[1].toLowerCase(); p = tag[2]; }
+    const term = cleanTerm(p.trim().replace(/^["'“”]+|["'“”]+$/g, ""));
+    if (term && !extras.some(e => e.lang === lang && e.text.toLowerCase() === term.text.toLowerCase())) extras.push({ ...term, lang });
+    if (extras.length >= 12) break;
   }
-  return { item: m[1].toUpperCase(), extras };   // extras: [{text, words}]
+  return { item: m[1].toUpperCase(), extras };   // extras: [{text, words, lang}]
 }
 
 // ---------- statement identity (for the history log) ----------
@@ -505,3 +544,117 @@ export function parseSettingsImport(text) {
   if (out.redirects && !["skip", "accept"].includes(out.redirects)) delete out.redirects;
   return out;
 }
+
+// ======================================================================
+// search scripts (for result pages that need clicking: "See results", tabs, "Page 2", "Page 3" …)
+// ======================================================================
+//   click <role|text> "name" [exact]      role = button, link, tab, heading, option, menuitem, checkbox, radio, listitem
+//   collect                               remember every link on the page now
+//   pages link "Page {n}" [max=10]        click Page 2, Page 3 … (collecting each) until there is no such link
+//   wait 1500                             milliseconds (max 5000)
+//   each "Videos", "Articles"             repeat the indented lines for every value; {x} = the value
+//     click text "{x}"
+// Pasted Playwright locators work as click steps:  get_by_role("button", name="…")   get_by_text("…")
+export function parseSearchScript(text) {
+  const lines = [];
+  String(text || "").split(/\r?\n/).forEach((l, i) => {
+    if (l.trim() && !l.trim().startsWith("#")) lines.push({ n: i + 1, indent: l.match(/^\s*/)[0].replace(/\t/g, "    ").length, s: l.trim() });
+  });
+  const quoted = s => [...s.matchAll(/"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'/g)].map(m => (m[1] ?? m[2]).replace(/\\(.)/g, "$1"));
+  const fail = (L, msg) => { throw new Error(`line ${L.n}: ${msg}`); };
+  const one = L => {
+    const s = L.s, q = quoted(s);
+    let m;
+    if (/^collect\b/i.test(s)) return { op: "collect" };
+    if ((m = s.match(/^wait\s+(\d+)/i))) return { op: "wait", ms: Math.min(5000, Number(m[1])) };
+    if ((m = s.match(/^click\s+(\w+)\s+["']/i))) return { op: "click", kind: m[1].toLowerCase(), name: q[0], exact: /\bexact\s*$/i.test(s) };
+    if ((m = s.match(/^pages\s+(\w+)\s+["']/i))) {
+      if (!q[0]?.includes("{n}")) fail(L, 'pages needs a name containing {n}, e.g. pages link "Page {n}"');
+      return { op: "pages", kind: m[1].toLowerCase(), tpl: q[0], max: Math.min(30, Number((s.match(/max=(\d+)/i) || [])[1]) || 10) };
+    }
+    if (/^each\b/i.test(s)) { if (!q.length) fail(L, 'each needs values, e.g. each "Videos", "Articles"'); return { op: "each", values: q, body: [] }; }
+    if ((m = s.match(/^(?:page\.)?get_by_role\(\s*["'](\w+)["']\s*(?:,\s*name\s*=\s*(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'))?/i))) {
+      const name = m[2] ?? m[3]; if (name == null) fail(L, "get_by_role needs name=...");
+      return { op: "click", kind: m[1].toLowerCase(), name, exact: /exact\s*=\s*True/i.test(s) };
+    }
+    if ((m = s.match(/^(?:page\.)?get_by_text\(\s*(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)')/i))) return { op: "click", kind: "text", name: m[1] ?? m[2], exact: /exact\s*=\s*True/i.test(s) };
+    return fail(L, `don't understand "${s.slice(0, 50)}"`);
+  };
+  let pos = 0;
+  const block = indent => {
+    const steps = [];
+    while (pos < lines.length && lines[pos].indent >= indent) {
+      const L = lines[pos];
+      if (L.indent > indent) fail(L, "unexpected indentation");
+      pos++;
+      const st = one(L);
+      if (st.op === "each") {
+        if (pos < lines.length && lines[pos].indent > L.indent) st.body = block(lines[pos].indent);
+        else fail(L, '"each" needs an indented block below it');
+      }
+      steps.push(st);
+    }
+    return steps;
+  };
+  const steps = lines.length ? block(lines[0].indent) : [];
+  if (pos < lines.length) fail(lines[pos], "unexpected indentation");
+  return steps;
+}
+
+// Runs INSIDE the page (chrome.scripting.executeScript) – must stay self-contained.
+export function pageOp(op, a) {
+  const norm = s => String(s || "").replace(/\s+/g, " ").trim().toLowerCase();
+  const visible = e => {
+    for (let n = e; n && n.nodeType === 1; n = n.parentElement) {
+      if (n.hidden) return false;
+      const st = getComputedStyle(n);
+      if (st.display === "none" || st.visibility === "hidden") return false;
+    }
+    return true;
+  };
+  if (op === "collect") {
+    return [...document.querySelectorAll("a[href]")].map(x => ({ href: x.href, text: (x.textContent || "").replace(/\s+/g, " ").trim().slice(0, 200) }));
+  }
+  const ROLE = {
+    button: 'button,[role=button],input[type=button],input[type=submit]', link: "a[href],[role=link]", tab: "[role=tab]",
+    heading: "h1,h2,h3,h4,h5,h6,[role=heading]", option: "option,[role=option]", menuitem: "[role=menuitem]",
+    checkbox: "input[type=checkbox],[role=checkbox]", radio: "input[type=radio],[role=radio]", listitem: "li,[role=listitem]"
+  };
+  const nameOf = e => e.getAttribute("aria-label") || e.innerText || e.textContent || e.value || e.title || e.alt || "";
+  const want = norm(a.name);
+  let els, textOf;
+  if (a.kind === "text") {
+    textOf = e => norm(e.textContent);
+    els = [...document.querySelectorAll("body *")].filter(e => !/^(SCRIPT|STYLE|NOSCRIPT)$/.test(e.tagName) && visible(e) && textOf(e).includes(want));
+    els = els.filter(e => !els.some(o => o !== e && e.contains(o)));       // the innermost element holding the text
+  } else {
+    textOf = e => norm(nameOf(e));
+    els = [...document.querySelectorAll(ROLE[a.kind] || `[role=${a.kind}]`)].filter(visible);
+  }
+  const pick = els.find(e => textOf(e) === want) || (a.exact ? null : els.find(e => textOf(e).includes(want)));
+  if (!pick) return { ok: false };
+  if (pick.scrollIntoView) pick.scrollIntoView({ block: "center" });
+  pick.click();
+  return { ok: true, tag: pick.tagName };
+}
+
+// Every way a run can end has its own badge symbol + colour (and the same symbol leads the notification title).
+export const KINDS = {
+  ok:        { badge: "✓",  color: "#2e7d32", text: "#ffffff", ms: 4000, label: "Saved" },
+  partial:   { badge: "+!", color: "#ef6c00", text: "#ffffff", ms: 7000, label: "Saved, but some websites had problems" },
+  present:   { badge: "=",  color: "#fbc02d", text: "#000000", ms: 6000, label: "Already on Wikidata – nothing changed" },
+  nothing:   { badge: "0",  color: "#9e9e9e", text: "#000000", ms: 6000, label: "Nothing found" },
+  stopped:   { badge: "■",  color: "#616161", text: "#ffffff", ms: 4000, label: "Stopped" },
+  cancelled: { badge: "✗",  color: "#616161", text: "#ffffff", ms: 4000, label: "Cancelled" },
+  login:     { badge: "LOG", color: "#6a1b9a", text: "#ffffff", ms: 8000, label: "Not logged in to Wikidata" },
+  clipboard: { badge: "Q?", color: "#0097a7", text: "#ffffff", ms: 8000, label: "No item in the clipboard" },
+  config:    { badge: "CFG", color: "#5d4037", text: "#ffffff", ms: 8000, label: "Website not configured" },
+  page:      { badge: "URL", color: "#795548", text: "#ffffff", ms: 6000, label: "This page can't be used" },
+  perm:      { badge: "PRM", color: "#ad1457", text: "#ffffff", ms: 8000, label: "Permission needed" },
+  lag:       { badge: "LAG", color: "#ef6c00", text: "#ffffff", ms: 8000, label: "Wikidata is busy (maxlag / rate limit)" },
+  cap:       { badge: "CAP", color: "#455a64", text: "#ffffff", ms: 8000, label: "Edit limit reached" },
+  net:       { badge: "NET", color: "#546e7a", text: "#ffffff", ms: 8000, label: "Network problem" },
+  blocked:   { badge: "BLK", color: "#d84315", text: "#ffffff", ms: 8000, label: "Websites blocked / rate-limited us" },
+  api:       { badge: "API", color: "#c62828", text: "#ffffff", ms: 8000, label: "Wikidata refused the request" },
+  error:     { badge: "!",  color: "#b71c1c", text: "#ffffff", ms: 8000, label: "Unexpected error" }
+};

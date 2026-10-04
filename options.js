@@ -1,5 +1,5 @@
 import { buildCandidates, originsFor, checkUrl, dedupeIds, effectiveMatch, cats, cleanTerm, usable, DEFAULTS,
-  exportSettingsObject, parseSettingsImport } from "./lib.js";
+  exportSettingsObject, parseSettingsImport, parseSearchScript, langsOf, KINDS } from "./lib.js";
 import { getSites, getSettings, saveAll } from "./store.js";
 
 const $ = id => document.getElementById(id);
@@ -9,9 +9,9 @@ let sites = [], idx = -1, settings = { ...DEFAULTS };
 const FIELDS = [
   ["name", "f_name"], ["qid", "f_qid"], ["idProperty", "f_idprop"], ["category", "f_category"],
   ["templates", "f_templates", "lines"], ["plurals", "f_plurals", "bool"], ["archive", "f_archive", "bool"],
-  ["separator", "f_sep", "text", "hyphen"], ["caseMode", "f_case", "text", "lower"], ["urlMode", "f_mode", "text", "nohash"],
+  ["separator", "f_sep", "sepset", "hyphen"], ["caseMode", "f_case", "text", "lower"], ["urlMode", "f_mode", "text", "nohash"],
   ["searchUrl", "f_searchUrl"], ["searchMode", "f_searchMode", "text", "fetch"], ["pickBy", "f_pickBy", "text", "title"],
-  ["titleMatch", "f_titleMatch", "text", "equal"], ["approvePartial", "f_approvePartial", "bool"], ["searchMax", "f_searchMax"], ["searchRegex", "f_searchRegex"], ["searchExclude", "f_searchExclude"],
+  ["titleMatch", "f_titleMatch", "text", "equal"], ["approvePartial", "f_approvePartial", "bool"], ["language", "f_language"], ["searchScript", "f_searchScript"], ["searchMax", "f_searchMax"], ["searchRegex", "f_searchRegex"], ["searchExclude", "f_searchExclude"],
   ["match", "f_match"], ["notFound", "f_notfound"], ["nonLetter", "f_nonletter"], ["smallWords", "f_small"]
 ];
 
@@ -21,15 +21,45 @@ const siteLabel = s => {
   return `${s.name || effectiveMatch({ ...s, templates: s.templates || [] }) || s.qid || s.idProperty || "(new website)"}${c ? "  ·  " + c : ""}${incomplete ? "  ⚠ incomplete" : ""}`;
 };
 
+const lsGet = (k, d) => { try { return localStorage.getItem(k) ?? d; } catch { return d; } };
+const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch { /* ignore */ } };
+
+function buildCatFilter() {
+  const f = $("catFilter"), keep = f.value || lsGet("siteFilter", "*");
+  const all = [...new Set(sites.flatMap(cats))].sort();
+  f.innerHTML = "";
+  const add = (v, t) => { const o = document.createElement("option"); o.value = v; o.textContent = t; f.append(o); };
+  add("*", `all categories (${sites.length})`);
+  for (const c of all) add("c:" + c, `${c} (${sites.filter(s => cats(s).includes(c)).length})`);
+  add("none", `(no category) (${sites.filter(s => !cats(s).length).length})`);
+  f.value = [...f.options].some(o => o.value === keep) ? keep : "*";
+}
+
+function visibleIndexes() {
+  const f = $("catFilter").value, mode = $("sortSel").value;
+  let ix = sites.map((_, i) => i).filter(i => f === "*" || (f === "none" ? !cats(sites[i]).length : cats(sites[i]).includes(f.slice(2))));
+  if (idx >= 0 && !ix.includes(idx)) ix.push(idx);                  // the website being edited always stays in the list
+  const nm = i => (sites[i].name || effectiveMatch({ ...sites[i], templates: sites[i].templates || [] }) || "~").toLowerCase();
+  const key = { name: i => nm(i), cat: i => (cats(sites[i])[0] || "~") + "|" + nm(i), lang: i => (langsOf(sites[i])[0] || "~") + "|" + nm(i) }[mode];
+  if (key) ix.sort((a, b) => key(a).localeCompare(key(b)));
+  return ix;
+}
+
 function renderSelect() {
+  buildCatFilter();
   const sel = $("siteSel");
   sel.innerHTML = "";
-  sites.forEach((s, i) => { const o = document.createElement("option"); o.value = i; o.textContent = siteLabel(s); sel.append(o); });
+  const ix = visibleIndexes();
+  for (const i of ix) { const o = document.createElement("option"); o.value = i; o.textContent = siteLabel(sites[i]); sel.append(o); }
   if (idx >= 0) sel.value = idx;
+  $("shown").textContent = `${ix.length} of ${sites.length} websites shown`;
   $("editor").hidden = idx < 0;
   $("dup").disabled = $("del").disabled = idx < 0;
   refreshCats();
 }
+$("catFilter").onchange = () => { lsSet("siteFilter", $("catFilter").value); const ix = visibleIndexes(); if (ix.length && !ix.includes(idx)) idx = ix[0]; renderSelect(); if (idx >= 0) loadEditor(); };
+$("sortSel").value = lsGet("siteSort", "saved");
+$("sortSel").onchange = () => { lsSet("siteSort", $("sortSel").value); renderSelect(); };
 
 function loadEditor() {
   const s = sites[idx];
@@ -37,6 +67,7 @@ function loadEditor() {
   for (const [key, id, type, def] of FIELDS) {
     const el = $(id), v = s[key];
     if (type === "bool") el.checked = !!v;
+    else if (type === "sepset") { const on = String(v || def).split(/[,\s]+/); el.querySelectorAll("input[data-sep]").forEach(c => c.checked = on.includes(c.dataset.sep)); }
     else if (type === "lines") el.value = (v || []).join("\n");
     else el.value = v ?? def ?? "";
   }
@@ -45,6 +76,7 @@ function loadEditor() {
 function readField([key, id, type, def]) {
   const el = $(id);
   if (type === "bool") return el.checked;
+  if (type === "sepset") { const on = [...el.querySelectorAll("input[data-sep]")].filter(c => c.checked).map(c => c.dataset.sep); return on.length ? on.join(",") : "hyphen"; }
   if (type === "lines") return el.value.split("\n").map(x => x.trim()).filter(Boolean);
   return el.value;
 }
@@ -53,7 +85,7 @@ for (const f of FIELDS) {
   $(f[1]).addEventListener("input", () => {
     if (idx < 0) return;
     sites[idx][f[0]] = readField(f);
-    const o = $("siteSel").options[idx]; if (o) o.textContent = siteLabel(sites[idx]);
+    const o = [...$("siteSel").options].find(x => Number(x.value) === idx); if (o) o.textContent = siteLabel(sites[idx]);
     refreshCats();
   });
 }
@@ -74,6 +106,8 @@ function normalizeSite(s) {
   o.templates = (s.templates || []).map(t => t.trim()).filter(Boolean);
   for (const k of ["name", "category", "match", "notFound", "nonLetter", "smallWords", "searchUrl", "searchRegex", "searchExclude"]) o[k] = (s[k] || "").trim();
   o.searchMax = Number(s.searchMax) > 0 ? Number(s.searchMax) : "";
+  o.searchScript = (s.searchScript || "").trim();
+  o.language = (s.language || "").trim().toLowerCase();
   return o;
 }
 
@@ -91,8 +125,8 @@ const SET_FIELDS = [
   ["username", "s_username"], ["labelLang", "s_labelLang"], ["review", "s_review"], ["redirects", "s_redirects"],
   ["reviewThreshold", "s_reviewThreshold", "num"], ["maxPerEdit", "s_maxPerEdit", "num"], ["minEditInterval", "s_minEditInterval", "num"],
   ["maxEditsPerHour", "s_maxEditsPerHour", "num"], ["hostDelayMs", "s_hostDelayMs", "num"], ["maxPerSite", "s_maxPerSite", "num"],
-  ["maxTotal", "s_maxTotal", "num"], ["missTtlDays", "s_missTtlDays", "num"],
-  ["related", "s_related", "bool"], ["useHistory", "s_useHistory", "bool"]
+  ["maxTotal", "s_maxTotal", "num"], ["maxlag", "s_maxlag", "num"], ["scriptMaxClicks", "s_scriptMaxClicks", "num"], ["scriptMaxSeconds", "s_scriptMaxSeconds", "num"], ["missTtlDays", "s_missTtlDays", "num"],
+  ["related", "s_related", "bool"], ["useHistory", "s_useHistory", "bool"], ["logToFile", "s_logToFile", "bool"]
 ];
 function loadSettings(src = settings) {
   for (const [k, id, t] of SET_FIELDS) { const el = $(id); if (t === "bool") el.checked = !!src[k]; else el.value = src[k] ?? ""; }
@@ -106,12 +140,19 @@ function collectSettings() {
     else o[k] = el.value.trim() || DEFAULTS[k];
   }
   o.maxPerEdit = Math.max(1, Math.min(20, o.maxPerEdit));
+  o.maxlag = Math.max(0, Math.min(60, o.maxlag));
+  o.scriptMaxClicks = Math.max(1, Math.min(200, o.scriptMaxClicks));
+  o.scriptMaxSeconds = Math.max(10, Math.min(600, o.scriptMaxSeconds));
   o.hostDelayMs = Math.max(500, o.hostDelayMs);          // never hammer a website
   o.username = o.username === DEFAULTS.username ? "" : o.username;
   return o;
 }
 
 $("save").onclick = async () => {
+  for (let i = 0; i < sites.length; i++) {            // a broken search script is reported before anything is saved
+    try { parseSearchScript(sites[i].searchScript || ""); }
+    catch (e) { select(i); const st = $("status"); st.className = "bad"; st.textContent = `Search script of “${siteLabel(sites[i])}”: ${e.message}`; return; }
+  }
   const clean = sites.map(normalizeSite).filter(s => s.qid || s.idProperty || s.templates.length || s.match || s.searchUrl);
   const origins = originsFor(clean);
   let granted = true;
@@ -142,6 +183,26 @@ $("sfile").onchange = async () => {
     loadSettings({ ...DEFAULTS, ...collectSettings(), ...imported });
     st.className = ""; st.textContent = `Imported ${Object.keys(imported).length} settings into the fields – press “Save all” to keep them.`;
   } catch (e) { st.className = "bad"; st.textContent = "Import failed: " + e.message; }
+};
+
+// ---------- debug log ----------
+async function getLogs() { return (await chrome.storage.local.get("logs")).logs || []; }
+function saveText(text, name) {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([text], { type: "text/plain;charset=utf-8" }));
+  a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+}
+const logName = l => `wikidata-source-saver-${l.time.replace(/[-:]/g, "").replace(/\..*/, "").replace("T", "-")}-${l.item || "noitem"}.log`;
+$("logdl").onclick = async () => { const l = (await getLogs()).at(-1); if (l) saveText(l.text, logName(l)); else $("logmsg").textContent = "No log yet – run the tool once."; };
+$("logdlall").onclick = async () => { const ls = await getLogs(); if (ls.length) saveText(ls.map(l => l.text).join("\n\n\n"), "wikidata-source-saver-logs.log"); else $("logmsg").textContent = "No log yet."; };
+$("logshow").onclick = async () => { const l = (await getLogs()).at(-1); const o = $("logout"); o.hidden = false; o.textContent = l ? l.text : "No log yet."; };
+$("logclear").onclick = async () => { await chrome.storage.local.remove("logs"); $("logout").hidden = true; $("logmsg").textContent = "Cleared."; };
+$("s_logToFile").onchange = async () => {
+  if (!$("s_logToFile").checked) return;
+  let ok = false;
+  try { ok = await chrome.permissions.request({ permissions: ["downloads"] }); } catch (e) { console.error(e); }
+  if (!ok) { $("s_logToFile").checked = false; $("logmsg").textContent = "Permission denied – log files can't be saved automatically (you can still download logs here)."; }
+  else $("logmsg").textContent = "Permission granted – press “Save all” to switch it on.";
 };
 
 // ---------- live status ----------
@@ -270,6 +331,14 @@ themeSel.onchange = () => {
   if (v) document.documentElement.dataset.theme = v; else delete document.documentElement.dataset.theme;
   try { v ? localStorage.setItem("theme", v) : localStorage.removeItem("theme"); } catch {}
 };
+
+// ---------- badge legend ----------
+for (const [kind, k] of Object.entries(KINDS)) {
+  const b = document.createElement("span");
+  b.textContent = k.badge; b.style.cssText = `background:${k.color};color:${k.text};padding:1px 7px;border-radius:3px;font:bold 12px monospace;text-align:center`;
+  const d = document.createElement("span"); d.textContent = k.label;
+  $("legend").append(b, d);
+}
 
 // ---------- start ----------
 (async () => {

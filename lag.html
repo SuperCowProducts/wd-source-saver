@@ -1,0 +1,26 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Wikidata is lagging – Wikidata Source Saver</title>
+<meta name="color-scheme" content="light dark">
+<style>
+  :root{--bg:#fff;--fg:#222;--muted:#666;--border:#c8ccd1;--card:#f8f9fa;--btn:#f1f3f5;--prim:#1565c0}
+  @media (prefers-color-scheme:dark){:root{--bg:#1b1d20;--fg:#e4e6e8;--muted:#9aa0a6;--border:#464b52;--card:#212428;--btn:#2f3338;--prim:#4f8fe0}}
+  body{font:14px system-ui,sans-serif;margin:0;padding:16px;background:var(--bg);color:var(--fg)}
+  h1{font-size:1.1rem;margin:0 0 8px} p{margin:8px 0} .m{color:var(--muted);font-size:12px}
+  ul{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:8px 8px 8px 26px;max-height:170px;overflow:auto;font-size:12px;word-break:break-all}
+  .btns{display:flex;flex-direction:column;gap:8px;margin-top:12px}
+  button{padding:9px 12px;font:inherit;cursor:pointer;border:1px solid var(--border);border-radius:5px;background:var(--btn);color:var(--fg);text-align:left}
+  button.p{background:var(--prim);border-color:var(--prim);color:#fff}
+</style></head>
+<body>
+<h1>Almost done – Wikidata is lagging</h1>
+<p id="what"></p>
+<ul id="rows"></ul>
+<p class="m" id="info"></p>
+<div class="btns">
+  <button class="p" id="off">Save now, ignoring maxlag – this time only</button>
+  <button id="retry">Wait, then try again with the same maxlag</button>
+  <button id="cancel">Cancel – write nothing</button>
+</div>
+<p class="m">“This time only” does not change your saved setting. Ignoring maxlag is fine at a human pace; it is the replication-lag courtesy check that bots are asked to honour.</p>
+<script src="lag.js"></script>
+</body></html>

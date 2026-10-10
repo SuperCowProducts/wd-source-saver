@@ -75,7 +75,7 @@ so clicks that load a new page work. Hard limits per search (Settings): clicks (
 after two pages without new links. Not supported: elements inside iframes or shadow DOM.
 
 ## Failure symbols (toolbar badge + start of the notification title; legend in Settings)
-✓ saved · +N! saved but some websites had problems · = already there · 0 nothing found · ■ stopped · ✗ review cancelled ·
+✓ saved (badge `+N`; with several statements `2+1` = two URLs in one statement + one separate statement, `+N` if there are too many groups for the badge) · +N! / 2+1! saved but some websites had problems · = already there · 0 nothing found · ■ stopped · ✗ review cancelled ·
 LOG not logged in · Q? no item in clipboard · CFG website not configured · URL page can't be used · PRM permission needed ·
 LAG Wikidata busy (maxlag / 429) · CAP edit limit reached · NET network problem · BLK websites blocked us · API Wikidata refused · ! unexpected.
 
@@ -87,3 +87,63 @@ cancel (LAG, nothing written). Plain rate limits (429/503) are not offered this 
 
 ## Websites list
 Filter by category and sort by saved order / name / category / language above the dropdown (remembered).
+
+## Google "site:" search
+For websites without a usable search of their own (e.g. encyclopedia.com): Settings -> website -> "Use the website's own search engine"
+-> button "Use Google 'site:' search for this website" (needs "Match" or a template so the domain is known). It fills in
+`https://www.google.com/search?q=site:encyclopedia.com+{q}`, background-tab mode, "URL contains the term - keep the most general path"
+(Google's link texts are noisy), and a script that accepts cookies and reads up to 3 pages. Google's redirect links
+(google.com/url?q=...) are unwrapped; only links to the website itself are kept; "Max results kept" and the script limits cap the volume.
+A CAPTCHA ("unusual traffic") page stops that search at once and blocks Google for the rest of the run - solve it in a normal tab.
+
+## Check if they exist (Settings -> Test your templates)
+Checks up to 20 URLs one at a time. Keep the Settings tab open (a background tab is fine). When it ends you get a summary on the page,
+a symbol on the toolbar icon (found/checked, e.g. 7/12; stays until you return to the tab) and a desktop notification. "Stop check" ends it early.
+
+## Review window
+The item, every URL, the page of an ID-property row, Wayback dates and the "already on the item" lines are clickable links (new tab).
+
+## IDs spanning several directories: {path}
+`{id}` is ONE path segment. Use `{path}` when the ID is several directories, e.g.
+`P99999 https://www.encyclopedia.com/{path}` matches `.../history/encyclopedias-almanacs-transcripts-and-maps/industrial-capitalism`
+and stores that whole path as the value. The term (for other websites and searches) comes from the last part ("industrial capitalism").
+Because the directories can't be guessed, a `{path}` template is only read (from the page you are on, and from search results such as
+the Google `site:` search) - it is never used to guess URLs from a term. Pair it with a search script/Google preset to find the pages.
+
+## "Doesn't exist" cache (why a page might be skipped)
+Pages that definitely don't exist (HTTP 404/410, redirected elsewhere, matched the site's "not found" text) are remembered for the number of
+days set in Settings (default 14) so they are not requested again. A skipped URL is never silent: it is listed in "Last run" and in the log
+("not re-checked: cached as not existing since DATE (reason)"). The entry is forgotten automatically when you visit that page, and
+Settings -> Test your templates shows a warning on cached URLs in "Preview URLs"; "Check if they exist" removes the entry of every URL that
+does exist. "Clear 'doesn't exist' cache" (History log) empties it; setting the days to 0 turns the cache off.
+
+## Robot checks ("Confirm you are not a robot")
+If a page you are collecting links from (Khan Academy, Google …) shows a robot check / CAPTCHA, you get a notification that stays until
+dismissed ("BOT  Robot check – Khan Academy"), the tab is brought to the front, the toolbar icon shows BOT, and the run WAITS (Settings → "Robot check:
+wait for me this long", default 180 s). Solve it and the search carries on by itself; the notification disappears. If it isn't solved in time, or the wait is 0,
+that search is stopped, the site is left alone for the rest of the run, and the page you are on is still saved (badge +N!). With "plain request" mode the check
+is recognised from the HTML and you are told to use "render in a background tab" for that website.
+
+## Text fragments from your selection
+Select text on the page before pressing the shortcut and the saved URL gets a text fragment, e.g.
+`https://www.treccani.it/enciclopedia/regione_(Enciclopedia-della-Matematica)/#:~:text=punto%20interno`. Nothing selected = plain URL. Long selections
+become `first words,last words`. Only the page you are on gets it (never the URLs found on related websites), and ID-property values never contain it.
+Settings: global switch + per-website override (Advanced).
+
+## Plural-tolerant URL matching in searches
+In "URL contains the term" mode the singular/plural spelling of the last word is also accepted (term "one sided limit" finds `.../one-sided-limits-from-graphs-asymptote`).
+
+## Redirects and spelling corrections
+The address a page (or the Wayback Machine) ENDS on decides what is written: `Harmonic_Number` -> `Harmonic_number` is stored as `Harmonic_number` (value, URL and P1065).
+Case/slash/www differences are always accepted. Real redirects (ProofWiki `Big_O_Notation` -> `Symbols:O/Big-O_Notation`) are skipped unless the website (or Settings) says
+"accept"; an accepted redirect must stay on the website, match one of its templates and still be about the same page. MediaWiki wikis: "Use MediaWiki search" preset.
+
+## Site access in one go
+Settings -> "Allow all websites in one go…" asks Chrome once for access to every website (the extension still only contacts the ones you configured). "Remove all-websites
+access" takes it away again (websites you allowed individually stay allowed).
+
+## Website data file (e.g. ~/Nextcloud/data.json)
+Settings -> "Website data file": "Create a file…" / "Use an existing file…" links a JSON file on your computer. While linked, the file is the source of truth: every run reads it,
+"Save all" writes it (asking first if the file changed elsewhere), "Reload from file" re-reads it. A copy is always kept in the browser and used whenever Chrome has not (re)granted
+access to the file (e.g. after a restart: "Re-grant access"); runs then say so in the last-run list and log. Optionally the Safety & politeness settings live in the file too.
+Needs a Chromium browser with the File System Access API. History log, cache and debug logs stay in the browser.

@@ -80,7 +80,7 @@ Wikidata labels and aliases are never used – only the page's own ID and the ex
   <label style="max-width:420px">Languages of this website <span class="hint">– e.g. <code>en</code> or <code>en, it</code>; empty = every language</span>
     <input id="f_language" placeholder="en"></label>
   <datalist id="cats"></datalist>
-  <label>URL templates <span class="hint">– one per line. <code>{id}</code> = the term, <code>{first}</code>/<code>{FIRST}</code> = its first letter, <code>{a|b|c}</code> = try each choice.
+  <label>URL templates <span class="hint">– one per line. <code>{id}</code> = the term, <code>{first}</code>/<code>{FIRST}</code> = its first letter, <code>{a|b|c}</code> = try each choice, <code>{path}</code> = an ID that spans several directories (<code>https://www.encyclopedia.com/{path}</code>; read from pages and search results – it can't be guessed from a term).
       Start a line with a property to save that template's ID with it (<code>P9999 https://…/Enc/{id}.html</code>); if the property stores more than <code>{id}</code>, say so after the property: <code>P10715:{first}/{id} https://…/terms/{first}/{id}.asp</code> stores <code>f/financial-statements</code>; lines without one use the default ID property, or P1343 + P2699 if none; <code>P1343 https://…</code> forces the fallback.</span>
     <textarea id="f_templates" rows="3" placeholder="https://www.mathwords.com/{first}/{id}.htm"></textarea></label>
   <div class="g3" style="margin-top:8px">
@@ -102,6 +102,10 @@ Wikidata labels and aliases are never used – only the page's own ID and the ex
   <details><summary>Use the website's own search engine</summary>
     <label>Search URL <span class="hint">– <code>{q}</code> = query with +, <code>{q20}</code> = query with %20</span>
       <input id="f_searchUrl" placeholder="https://mathsisfun.com/search/search.html?query={q}&amp;search=1"></label>
+    <p style="margin:6px 0"><button type="button" id="googlePreset">Use Google “site:” search for this website</button>
+      <span class="hint">fills in a <code>site:</code> search, background-tab mode, “URL contains the term”, and a script that accepts cookies and reads up to 3 pages. Google may show a CAPTCHA if used a lot – the run then stops using it.</span></p>
+    <p style="margin:6px 0"><button type="button" id="mediawikiPreset">Use MediaWiki search for this website</button>
+      <span class="hint">for wikis (ProofWiki, Encyclopedia of Mathematics…): a plain-request full-text search; “link text contains the term”, partial matches need your approval, redirects accepted. Adjust the path (<code>/w/index.php</code> or <code>/index.php</code>) if needed.</span></p>
     <div class="g3" style="margin-top:8px">
       <label>How to read the results page<select id="f_searchMode"><option value="fetch">plain request (fast, polite)</option><option value="tab">render in a background tab (JavaScript sites)</option></select></label>
       <label>Which results to keep<select id="f_pickBy"><option value="title">link text matches the term</option><option value="slug">URL contains the term – keep the most general path</option></select></label>
@@ -124,6 +128,8 @@ Wikidata labels and aliases are never used – only the page's own ID and the ex
       <label>Match (domain or domain/path) – empty = derived from the first template<input id="f_match" placeholder="law.cornell.edu/wex"></label>
       <label>"Page not found" text/regex (sites that return 200 for missing pages)<input id="f_notfound" placeholder="Page not found|No results"></label>
       <label>Small words kept lowercase (Title Case, small words)<input id="f_small" placeholder="a, an, and, as, at, but, by, for, in, nor, of, on, or, the, to, up"></label>
+      <label>Selected text → <code>#:~:text=</code> link<select id="f_textFragment"><option value="">use the global setting</option><option value="on">add it when text is selected</option><option value="off">never</option></select></label>
+      <label>If a page redirects (e.g. to its correctly spelled / canonical title)<select id="f_redirects"><option value="">use the global setting</option><option value="accept">accept – save the page it ends on</option><option value="skip">treat as not found</option></select></label>
       <label>ID value pattern (default ID property; empty = <code>{id}</code>)<input id="f_idvalue" placeholder="{first}/{id}"></label>
       <label>Folder for IDs starting with a digit/symbol (<code>{first}</code>)<input id="f_nonletter" placeholder="0-9"></label>
     </div>
@@ -131,6 +137,24 @@ Wikidata labels and aliases are never used – only the page's own ID and the ex
 </div>
 
 <p><button class="p" id="save">Save all</button><span id="status"></span></p>
+<div class="card" id="permCard">
+  <b>Site access</b> <span id="permStatus" class="hint"></span>
+  <p class="bar"><button id="permAll">Allow all websites in one go…</button><button id="permNone" hidden>Remove all-websites access</button></p>
+  <p class="hint">Chrome asks once (“read and change your data on all websites”) so you never get a permission prompt for a new website again.
+  The extension still only contacts the websites you configured (and Wikidata, the Wayback Machine, search engines you set up). Without this, “Save all” asks for each website separately.
+  Removing it keeps the individual websites you allowed earlier.</p>
+</div>
+
+<h2>Website data file</h2>
+<div class="card" id="fileCard">
+  <p class="hint">Keep your websites in a JSON file on your computer (for example in a Nextcloud folder) instead of only inside the browser. The file becomes the source of truth;
+  the browser keeps a copy that is used whenever Chrome has not (re)granted access to the file. Chrome may ask again after a restart – use “Re-grant access”.</p>
+  <p id="fileState"></p>
+  <p class="bar"><button id="fileOpen">Use an existing file…</button><button id="fileNew">Create a file…</button>
+    <button id="fileReload" hidden>Reload from file</button><button id="fileRegrant" hidden>Re-grant access</button><button id="fileOff" hidden>Disconnect</button></p>
+  <label><input type="checkbox" id="fileInc">Also keep the Safety &amp; politeness settings in the file (includes your username)</label>
+</div>
+
 <p class="hint">Saving asks Chrome for permission to read the websites in your templates/search URLs (needed to check pages).</p>
 
 <h2>Safety &amp; politeness</h2>
@@ -157,6 +181,10 @@ Wikidata labels and aliases are never used – only the page's own ID and the ex
   <div class="g4">
     <label>maxlag when saving (seconds, 0 = off)<input type="number" min="0" max="60" id="s_maxlag" title="Sent only with edits. Raise it or set 0 as a temporary measure while Wikidata is congested; honour Retry-After either way."></label>
   </div>
+  <div class="g4">
+    <label>Robot check: wait for me this long (seconds, 0 = give up at once)<input type="number" min="0" max="900" id="s_captchaWaitSeconds" title="When a website asks to confirm you are not a robot, you get a notification, the tab comes to the front, and the run waits."></label>
+  </div>
+  <label><input type="checkbox" id="s_textFragment">Add the text I have selected on the page to the saved URL as a text fragment (<code>…/regione_(Enciclopedia-della-Matematica)/#:~:text=punto%20interno</code>)</label>
   <label><input type="checkbox" id="s_related">Look for the term on related websites (same category)</label>
   <label><input type="checkbox" id="s_useHistory">Use the history log to skip statements that are already known</label>
   <label style="max-width:460px;margin-top:6px">If a page redirects to a different address
@@ -173,7 +201,9 @@ Wikidata labels and aliases are never used – only the page's own ID and the ex
   <label>Category<select id="tcat"></select></label>
   <label>Term (e.g. <code>use of force</code>)<input id="tterm" placeholder="use"></label>
 </div>
-<p><button id="preview">Preview URLs</button> <button id="check">Check if they exist</button></p>
+<p><button id="preview">Preview URLs</button> <button id="check">Check if they exist</button> <button id="checkstop" hidden>■ Stop check</button>
+  <span id="checkmsg" class="hint"></span></p>
+<div id="checksum" style="font-weight:600;margin:4px 0" hidden></div>
 <pre id="tout" hidden></pre>
 
 <h2>History log</h2>

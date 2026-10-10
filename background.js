@@ -1,6 +1,6 @@
 import {
   normUrl, findCurrent, buildCandidates, dedupeIds, parseClipboard, checkUrl, unwrapArchive, waybackLatest,
-  tsToDate, cleanTerm, alignToTerms, cats, sharesCat, usable, searchUrl, extractLinks, pickResultsDetailed, parseSearchScript, pageOp, langsOf, termsForSite, KINDS,
+  tsToDate, cleanTerm, alignToTerms, cats, sharesCat, usable, searchUrl, extractLinks, pickResultsDetailed, parseSearchScript, pageOp, langsOf, termsForSite, KINDS, resolveArchiveUrl, redirectProblem, robotCheckInPage, looksLikeRobotCheckHtml, textFragmentFor,
   matchTemplates, keyFor, applyUrlMode, propForUrl, siteDefaultProp,
   DEFAULTS
 } from "./lib.js";
@@ -78,6 +78,13 @@ async function persistLog(entry, s) {
 
 function renderBadge() {
   if (!current) return;
+  if (current.robot) {                                    // waiting for YOU to solve a robot check
+    chrome.action.setBadgeBackgroundColor({ color: KINDS.robot.color });
+    if (chrome.action.setBadgeTextColor) chrome.action.setBadgeTextColor({ color: KINDS.robot.text });
+    chrome.action.setBadgeText({ text: "BOT" });
+    chrome.action.setTitle({ title: `Robot check on ${current.robot.label}: solve it in the tab that opened – the run continues by itself` });
+    return;
+  }
   const { done, total, stage } = current;
   chrome.action.setBadgeBackgroundColor({ color: "#1565c0" });
   if (chrome.action.setBadgeTextColor) chrome.action.setBadgeTextColor({ color: "#ffffff" });
@@ -225,7 +232,10 @@ async function getCsrf(signal) {
 async function loadHistory(s) {
   const { history = { items: {} }, misses = {} } = await chrome.storage.local.get(["history", "misses"]);
   const cutoff = Date.now() - s.missTtlDays * 864e5;
-  for (const k of Object.keys(misses)) if (misses[k] < cutoff) delete misses[k];
+  for (const k of Object.keys(misses)) {
+    const v = typeof misses[k] === "number" ? { t: misses[k], why: "cached by an earlier version" } : misses[k];
+    if (!v || v.t < cutoff) delete misses[k]; else misses[k] = v;
+  }
   return { history, misses };
 }
 const saveHistory = (history, misses) => chrome.storage.local.set({ history, misses });
@@ -330,6 +340,15 @@ export async function planSources(item, entries, signal) {
     plan.push({ id, entry, status: "created", group: q, lead: g.lead === id });
   });
   return plan;
+}
+
+// Which Wikidata statement does a planned change end up in?  (URLs of one website share one P1343 statement)
+const stmtKey = p => p.claim?.id || (p.group ? "g:" + p.group : "n:" + p.id);
+// "2+1" = two URLs in one statement + one separate statement; shown on the badge, notification and review button
+export function groupCounts(items) {
+  const m = new Map();
+  for (const p of items) m.set(stmtKey(p), (m.get(stmtKey(p)) || 0) + 1);
+  return [...m.values()];
 }
 
 // ONE edit containing every chosen change, after waiting for the edit-rate limits.
@@ -468,12 +487,23 @@ async function pageUrl(tab, site, href, wrapped) {
   return applyUrlMode(href, site.urlMode);
 }
 
+// Selected text on the page -> "#:~:text=punto%20interno" (opens the page scrolled to / highlighting that passage)
+async function selectionFragment(tab, site, s) {
+  const mode = site.textFragment || (s.textFragment ? "on" : "off");
+  if (mode !== "on") return "";
+  try {
+    const [r] = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: () => String((window.getSelection && window.getSelection()) || "") });
+    return textFragmentFor(r?.result || "");
+  } catch { return ""; }
+}
+
 const hasPerm = async host => chrome.permissions.contains({ origins: [`*://${host}/*`] });
 
 async function lookupArchive(url, signal) {
   if (!(await hasPerm("web.archive.org"))) return { found: false, error: true, noPerm: true };
-  const r = await waybackLatest(url, hostFetch, signal);
-  dlog("ARCH", `${url} -> ${r.found ? r.url : r.error ? "lookup failed" : "no snapshot"}`);
+  let r = await waybackLatest(url, hostFetch, signal);
+  if (r.found && !r.corrected) r = await resolveArchiveUrl(r, hostFetch, signal);
+  dlog("ARCH", `${url} -> ${r.found ? r.url + (r.corrected ? "  (corrected by the Wayback Machine)" : "") : r.error ? "lookup failed" : "no snapshot"}`);
   return r;
 }
 
@@ -483,13 +513,16 @@ async function checkWithPermission(c, s, signal) {
 }
 
 async function resolveCandidate(c, s, signal) {
-  const [live, arch] = await Promise.all([
-    checkWithPermission(c, s, signal),
-    c.site.archive ? lookupArchive(c.url, signal) : Promise.resolve(null)
-  ]);
+  const live = await checkWithPermission(c, s, signal);
+  // the archive is looked up for the address the live site ended on (its spelling is the right one)
+  const arch = c.site.archive ? await lookupArchive(live.found ? live.url : c.url, signal) : null;
   const archive = arch?.found ? arch : null;
   if (live.found) return { found: true, url: live.url, archive };
-  if (archive) return { found: true, url: c.url, archive, viaArchive: true };
+  if (archive) {
+    // live site unreachable: the archived capture knows the correct spelling (…/Harmonic_Number -> …/Harmonic_number)
+    const fixed = archive.original && archive.original !== c.url && !redirectProblem(c.site, c.url, archive.original) ? archive.original : c.url;
+    return { found: true, url: fixed, archive, viaArchive: true };
+  }
   const why = arch ? (arch.noPerm ? "no permission for web.archive.org – open settings and press Save"
     : arch.error ? "Wayback lookup failed" : "no Wayback snapshot") : null;
   return { found: false, reason: why ? `${live.reason}; ${why}` : live.reason,
@@ -508,7 +541,7 @@ function waitTabComplete(tabId, ms, signal) {
 
 // Runs a parsed search script in an already loaded tab: clicks, pagination, collecting links.
 // Every action is a separate executeScript call, so clicks that navigate to a new page keep working.
-export async function runSearchScript(tabId, steps, site, signal, s, host) {
+export async function runSearchScript(tabId, steps, site, signal, s, host, guard) {
   const k = s.hostDelayMs === 0 ? 0.01 : 1;                    // (tests run without delays)
   const ctx = { links: new Map(), notes: [], clicks: 0, deadline: Date.now() + s.scriptMaxSeconds * 1000 };
   const label = labelOf(site);
@@ -532,6 +565,7 @@ export async function runSearchScript(tabId, steps, site, signal, s, host) {
     for (let i = 0; i < 20; i++) { const t = await chrome.tabs.get(tabId); if (t.status === "complete") break; await sleep(500 * k, signal); }
     let last = -1;
     for (let i = 0; i < 5; i++) { const n = ((await op("collect")) || []).length; if (n === last) break; last = n; await sleep(700 * k, signal); }
+    if (guard) await guard();                                   // a robot check may appear after any click
   };
   const sub = (t, v) => t.replace(/\{x\}/g, v.x ?? "").replace(/\{n\}/g, v.n ?? "");
   const click = async (kind, name, exact) => {
@@ -576,6 +610,62 @@ export async function runSearchScript(tabId, steps, site, signal, s, host) {
   return { links: [...ctx.links.values()], notes: ctx.notes };
 }
 
+// ---- robot checks: tell the user, bring the tab forward, wait for them to solve it, then carry on ----
+async function isRobotCheck(tabId) {
+  try {
+    const t = await chrome.tabs.get(tabId);
+    if (/google\.[a-z.]+\/sorry\//i.test(t?.url || "")) return true;
+    const [r] = await chrome.scripting.executeScript({ target: { tabId }, func: robotCheckInPage });
+    return !!r?.result;
+  } catch { return false; }
+}
+function notifyRobot(label, tabId, canSolve) {
+  const id = `robot-${tabId ?? "x"}-${Date.now()}`;
+  try {
+    chrome.notifications.create(id, {
+      type: "basic", iconUrl: "icons/icon128.png", requireInteraction: true, priority: 2,
+      title: `BOT  Robot check – ${label}`,
+      message: canSolve
+        ? `${label} asks you to confirm you are not a robot. Solve it in the tab that just opened – the search continues by itself afterwards.`
+        : `${label} asks to confirm you are not a robot, so this search was stopped. Open the site in a normal tab and solve it, or switch the website to “render in a background tab” so the extension can wait for you.`
+    });
+  } catch (e) { console.warn("robot notification failed", e); }
+  return id;
+}
+async function robotWait(tabId, host, label, signal) {
+  const s = current?.settings || DEFAULTS;
+  const k = s.hostDelayMs === 0 ? 0.01 : 1;
+  if (current) current.robotSeen = true;
+  dlog("ROBOT", `robot check on ${host}`);
+  if (!(s.captchaWaitSeconds > 0)) {
+    notifyRobot(label, tabId, false);
+    current?.blocked.add(host);
+    throw Object.assign(new Error(`${label} shows a robot check – search stopped (rate-limited/blocking)`), { blocked: true });
+  }
+  try {
+    const t = await chrome.tabs.get(tabId);
+    await chrome.tabs.update(tabId, { active: true });
+    if (t?.windowId != null) await chrome.windows.update(t.windowId, { focused: true });
+  } catch { /* tab may be gone */ }
+  const nid = notifyRobot(label, tabId, true);
+  current.robot = { tabId, host, label };
+  setStage(`waiting for you: robot check on ${label}`);
+  const deadline = Date.now() + s.captchaWaitSeconds * 1000;
+  try {
+    while (Date.now() < deadline) {
+      await sleep(2000 * k, signal);
+      if (!(await isRobotCheck(tabId))) { dlog("ROBOT", "solved – continuing"); await sleep(1000 * k, signal); return; }
+    }
+  } finally { if (current) { current.robot = null; renderBadge(); } try { chrome.notifications.clear(nid); } catch { /* ignore */ } }
+  current?.blocked.add(host);
+  throw Object.assign(new Error(`${label} still shows a robot check after ${s.captchaWaitSeconds}s – search stopped (rate-limited/blocking)`), { blocked: true });
+}
+chrome.notifications?.onClicked?.addListener(async id => {         // clicking the notification brings the tab forward
+  const m = /^robot-(\d+)-/.exec(id);
+  if (!m) return;
+  try { const t = await chrome.tabs.get(Number(m[1])); await chrome.tabs.update(t.id, { active: true }); await chrome.windows.update(t.windowId, { focused: true }); } catch { /* gone */ }
+});
+
 // Result links of a site's own search page. "fetch" = plain request; "tab" = render in a background tab (JS-driven sites)
 async function fetchSearchLinks(site, url, signal) {
   const host = new URL(url).hostname;
@@ -587,12 +677,15 @@ async function fetchSearchLinks(site, url, signal) {
       const tab = await chrome.tabs.create({ url, active: false });
       try {
         await waitTabComplete(tab.id, 20000, signal);
+        const captcha = () => isRobotCheck(tab.id).then(r => r && robotWait(tab.id, host, labelOf(site), signal));
+        await captcha();
         const script = (site.searchScript || "").trim();
         if (script) {
           let steps;
           try { steps = parseSearchScript(script); } catch (e) { throw new Error("search script, " + e.message); }
           await sleep((current?.settings?.hostDelayMs === 0 ? 10 : 1500), signal);
-          const r = await runSearchScript(tab.id, steps, site, signal, current?.settings || DEFAULTS, host);
+          const r = await runSearchScript(tab.id, steps, site, signal, current?.settings || DEFAULTS, host, captcha);
+          await captcha();
           const out = r.links; out.notes = r.notes;
           return out;
         }
@@ -607,13 +700,22 @@ async function fetchSearchLinks(site, url, signal) {
           if (now.length && now.length === links.length) break; // results stopped changing
           links = now;
         }
+        await captcha();
         return links;
       } finally { paced(host); chrome.tabs.remove(tab.id).catch(() => {}); }
     });
   }
   const res = await hostFetch(url, { credentials: "omit", timeoutMs: 15000, signal });
+  const html = (await res.text()).slice(0, 3_000_000);
+  if (/google\.[a-z.]+\/sorry\//i.test(res.url || "") || looksLikeRobotCheckHtml(html)) {
+    if (current) current.robotSeen = true;
+    current?.blocked.add(host);
+    dlog("ROBOT", `robot check on ${host} (plain request)`);
+    notifyRobot(labelOf(site), null, false);
+    throw Object.assign(new Error(`${labelOf(site)} showed a robot check – search stopped (rate-limited/blocking). Use “render in a background tab” for this website so you can solve it and the run can continue.`), { blocked: true });
+  }
   if (!res.ok) throw new Error("HTTP " + res.status);
-  return extractLinks((await res.text()).slice(0, 3_000_000), res.url || url);
+  return extractLinks(html, res.url || url);
 }
 
 // prop = Wikidata property storing the ID for this URL ("" = P1343 + P2699 fallback, which needs the website item)
@@ -655,6 +757,8 @@ async function runInner(tab, only, s, signal) {
   const href = un ? un.original : tab.url;
 
   const sites = await getSites();
+  const fileState = (await chrome.storage.local.get("fileStatus")).fileStatus;
+  if (fileState && !fileState.ok) dlog("WARN", "website data file: " + fileState.msg);
   const cur = findCurrent(sites, href);
   if (!cur) {
     const host = new URL(href).hostname.replace(/^www\./, "");
@@ -662,10 +766,12 @@ async function runInner(tab, only, s, signal) {
     throw new RunError(`No Wikidata item configured for ${host}. Opened settings so you can add it.`, "config");
   }
   const site = cur.site;
-  const url = await pageUrl(tab, site, href, !!un);
+  let url = await pageUrl(tab, site, href, !!un);
   dlog("INFO", `page ${tab.url}${un ? " (web.archive.org snapshot of " + href + ")" : ""}`);
   dlog("INFO", `matched website "${labelOf(site)}"`, { qid: site.qid, idProperty: site.idProperty, categories: cats(site), separator: site.separator, caseMode: site.caseMode, archive: !!site.archive });
   dlog("INFO", "ID read from the URL", cur.extracted ? { template: cur.extracted.template, raw: cur.extracted.raw, words: cur.extracted.words, sep: cur.extracted.sep, prop: cur.extracted.prop } : "(page doesn't match a template)");
+  const frag = await selectionFragment(tab, site, s);
+  if (frag) { url = url.split("#")[0] + frag; dlog("INFO", "the text you selected is added as a text fragment", frag); }
   dlog("INFO", `URL that will be saved: ${url}`);
 
   setStage("reading clipboard…");
@@ -677,6 +783,7 @@ async function runInner(tab, only, s, signal) {
 
   const { history, misses } = await loadHistory(s);
   const known = s.useHistory ? (history.items[item] || {}) : {};
+  for (const k of Object.keys(misses)) if (normUrl(k) === normUrl(href) || normUrl(k) === normUrl(url)) { delete misses[k]; dlog("CACHE", `forgot cached miss for ${k} (you are on that page)`); }
   const isKnown = (key, archiveWanted) => { const r = known[key]; return !!r && (!archiveWanted || r.a); };
 
   // --- terms: ONLY the page's own ID and the extras you typed. Wikidata labels/aliases are never used. ---
@@ -701,6 +808,7 @@ async function runInner(tab, only, s, signal) {
     else { setStage("looking up the Wayback Machine…"); const a = await lookupArchive(url, signal); if (a.found) archive = a; }
   }
   const entries = [], skipped = [], knownLines = [];
+  if (fileState && !fileState.ok) skipped.push({ label: "Website data file", url: "", reason: fileState.msg });
   const firstProp = cur.extracted ? cur.extracted.prop : (siteDefaultProp(site) === "P1343" ? "" : siteDefaultProp(site));
   const first = makeEntry(site, url, cur.extracted?.value, archive, firstProp);
   if (!first) skipped.push({ label: labelOf(site), url: href, reason: whyNot(site, firstProp) });
@@ -713,7 +821,12 @@ async function runInner(tab, only, s, signal) {
     const cands = buildCandidates(sites, site, ids, { perSite: s.maxPerSite, total: s.maxTotal }).filter(c => {
       if (seen.has(normUrl(c.url))) return false;
       if (isKnown(keyFor(c.site, c.url, c.value, c.prop), !!c.site.archive)) { knownLines.push(`${labelOf(c.site)} – ${c.url}`); return false; }
-      if (misses[c.url]) return false;
+      if (misses[c.url]) {
+        const m = misses[c.url];
+        skipped.push({ label: labelOf(c.site), url: c.url, reason: `not re-checked: cached as not existing since ${new Date(m.t).toISOString().slice(0, 10)} (${m.why}). Settings → Test your templates → “Check if they exist” clears it if the page exists; or clear the cache in Settings → History log` });
+        dlog("CACHE", `skipped ${c.url}: cached miss from ${new Date(m.t).toISOString()} (${m.why})`);
+        return false;
+      }
       return true;
     });
     dlog("INFO", `${cands.length} URL guesses (after skipping the current page, history and cached misses)`, cands.map(c => `${c.site.name || c.site.qid}${c.prop ? " [" + c.prop + "]" : ""} ${c.url}`), 6000);
@@ -728,8 +841,15 @@ async function runInner(tab, only, s, signal) {
     setStage("checking related websites…", 0, tasks.length);
     const foundKeys = new Set(), missList = [], foundMap = new Map();
     const addFound = (c, r, extra = {}) => {
-      const e = makeEntry(c.site, r.url, c.value, r.archive, c.prop, { viaArchive: r.viaArchive, ...extra });
-      if (!e) return skipped.push({ label: labelOf(c.site), url: r.url, reason: whyNot(c.site, c.prop) });
+      let cc = c;
+      if (r.url && r.url !== c.url) {                 // spelling/redirect corrected by the site or the archive: store THAT, not our guess
+        const m = matchTemplates(c.site, r.url);
+        if (m) cc = { ...c, prop: m.prop, value: m.value };
+        else if (c.prop) return skipped.push({ label: labelOf(c.site), url: r.url, reason: `corrected to ${r.url}, which matches no template – can't read the ${c.prop} value from it` });
+        dlog("CHECK", `${c.url} was corrected to ${r.url}`, cc.value !== c.value ? { value: `${c.value} -> ${cc.value}` } : undefined);
+      }
+      const e = makeEntry(cc.site, r.url, cc.value, r.archive, cc.prop, { viaArchive: r.viaArchive, ...extra });
+      if (!e) return skipped.push({ label: labelOf(c.site), url: r.url, reason: whyNot(c.site, cc.prop) });
       const k = entryKey(e);
       if (foundMap.has(k) || seen.has(normUrl(e.url)) || isKnown(k, e.archiveWanted)) return;
       foundMap.set(k, e);
@@ -747,14 +867,14 @@ async function runInner(tab, only, s, signal) {
           else {
             if (r.stopped) signal.throwIfAborted();
             missList.push({ key, label: labelOf(t.c.site), url: t.c.url, reason: r.reason });
-            if (r.definitive) misses[t.c.url] = Date.now();
+            if (r.definitive) misses[t.c.url] = { t: Date.now(), why: r.reason };
           }
         } else {
           setStage(`searching ${labelOf(t.x)} for “${t.q.text}”… (${done + 1}/${tasks.length})`);
           const sUrl = searchUrl(t.x, t.q.text);
           let links;
           try { links = await fetchSearchLinks(t.x, sUrl, signal); }
-          catch (e) { if (signal.aborted) throw e; skipped.push({ label: labelOf(t.x), url: sUrl, reason: "search failed: " + (e.blocked ? "host rate-limited/blocking" : e.message) }); return; }
+          catch (e) { if (signal.aborted) throw e; skipped.push({ label: labelOf(t.x), url: sUrl, reason: "search failed: " + (e.message && e.message !== "blocked" ? e.message : "host rate-limited/blocking") }); return; }
           if (links.notes?.length) skipped.push({ label: labelOf(t.x), url: sUrl, reason: "search script: " + links.notes.join("; ") });
           const picks = pickResultsDetailed(links, t.x, termsForSite(searchTerms, t.x), sUrl);
           dlog("SRCH", `${sUrl}: ${links.length} links on the page; first 40`, links.slice(0, 40).map(l => `${l.text.slice(0, 60)} | ${l.href}`), 5000);
@@ -794,7 +914,7 @@ async function runInner(tab, only, s, signal) {
     const sel = await askReview({
       item, itemLabel: "", maxPerEdit: s.maxPerEdit,
       rows: fresh.map(p => ({ id: p.id, label: p.entry.label, text: p.entry.property ? `${p.entry.property}: ${p.entry.value}` : p.entry.url,
-        archive: p.entry.archive?.date || null, viaSearch: !!p.entry.viaSearch, needsApproval: !!p.entry.needsApproval, viaArchive: !!p.entry.viaArchive,
+        gkey: stmtKey(p), archive: p.entry.archive?.date || null, archiveUrl: p.entry.archive?.url || null, url: p.entry.url, viaSearch: !!p.entry.viaSearch, needsApproval: !!p.entry.needsApproval, viaArchive: !!p.entry.viaArchive,
         note: p.status === "archive-added" ? "adds the archive URL to an existing statement"
           : p.status === "qualifier-added" ? "adds the URL to the existing P1343 statement"
           : p.group && !p.lead ? "added under the same new P1343 statement" : "new statement" })),
@@ -846,10 +966,16 @@ async function runInner(tab, only, s, signal) {
   const trouble = (current?.blocked.size || 0) > 0 || skipped.some(n => /timeout|network error|rate-limited|blocking|failed|HTTP 5|HTTP 403|HTTP 429/.test(n.reason));
   const noPerm = skipped.some(n => /no permission/.test(n.reason));
   if (chosen.length) {
-    return { kind: trouble ? "partial" : "ok", badge: "+" + chosen.length + (trouble ? "!" : ""),
-      title: `${trouble ? "+" + chosen.length + "!  Saved with problems" : "Saved " + chosen.length + " source" + (chosen.length > 1 ? "s" : "")} on ${item}`, message: msg };
+    const groups = groupCounts(chosen), split = groups.length > 1 ? groups.join("+") : "";
+    let badge = split || "+" + chosen.length;
+    if (trouble) badge += "!";
+    if (badge.length > 4) badge = "+" + chosen.length + (trouble ? "!" : "");     // the badge only has room for ~4 characters
+    dlog("INFO", `written: ${chosen.length} change(s) in ${groups.length} statement(s)`, groups);
+    return { kind: trouble ? "partial" : "ok", badge,
+      title: `${badge}  ${trouble ? "Saved with problems" : "Saved " + chosen.length + " source" + (chosen.length > 1 ? "s" : "")}${split ? " (" + split + ")" : ""} on ${item}`, message: msg };
   }
   if (present.length || knownLines.length) return { kind: "present", message: msg || "Nothing new." };
+  if (current?.robotSeen) return { kind: "robot", message: "A website asked you to confirm you are not a robot.\n" + msg };
   if ((current?.blocked.size || 0) > 0) return { kind: "blocked", message: msg + "\nBlocked: " + [...current.blocked].join(", ") };
   if (noPerm) return { kind: "perm", message: "Open Settings and press “Save all” to give the extension access to the websites in your templates/search URLs.\n" + msg };
   if (trouble) return { kind: "net", message: msg };

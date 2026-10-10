@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Wikidata Source Saver",
-  "version": "2.5.2",
+  "version": "2.9.0",
   "description": "Press a shortcut to add 'described at URL' (P1343 + P2699) to the Wikidata item in your clipboard, for configured websites.",
   "permissions": [
     "activeTab",

@@ -538,10 +538,31 @@ for (const [kind, k] of Object.entries(KINDS)) {
   sites = await getSites();
   settings = await getSettings();
   loadSettings();
-  const add = new URLSearchParams(location.search).get("add");
+  // a website defined from the clipboard ("Label (Q…)" / "Label (P…)") was handed over by the background script
+  const { pendingSite } = await chrome.storage.local.get("pendingSite");
+  if (pendingSite) {
+    await chrome.storage.local.remove("pendingSite");
+    const key = s => (pendingSite.qid && s.qid === pendingSite.qid) || (pendingSite.idProperty && s.idProperty === pendingSite.idProperty);
+    const norm = t => t.trim().replace(/^[a-z][a-z0-9+.-]*:\/\//i, "").replace(/^www\./i, "").toLowerCase();
+    let i = sites.findIndex(key);
+    const note = $("prefillNote");
+    if (i >= 0) {                                                       // already configured: only add what is missing
+      const have = new Set((sites[i].templates || []).map(t => norm(t.replace(/^P\d+(:\S+)?\s+/i, ""))));
+      const added = (pendingSite.templates || []).filter(t => !have.has(norm(t)));
+      sites[i].templates = [...(sites[i].templates || []), ...added];
+      if (!sites[i].name) sites[i].name = pendingSite.name;
+      note.textContent = `“${siteLabel(sites[i])}” was already configured – ${added.length ? "added the URL template" + (added.length > 1 ? "s " : " ") + added.join(", ") : "no new URL templates"}. Press “Save all” to keep the change.`;
+    } else {
+      sites.push({ name: pendingSite.name || "", qid: pendingSite.qid || "", idProperty: pendingSite.idProperty || "", templates: pendingSite.templates || [], match: pendingSite.match || "", category: "" });
+      i = sites.length - 1;
+      note.textContent = `Pre-filled from Wikidata: ${pendingSite.note}. Add a category (and check the template), then press “Save all”.`;
+    }
+    note.hidden = false; idx = i; renderSelect(); loadEditor();
+    $("f_category").focus();
+  }
+  const add = pendingSite ? null : new URLSearchParams(location.search).get("add");
   if (add && !sites.some(s => effectiveMatch({ ...s, templates: s.templates || [] }) === add)) sites.push({ match: add });
-  idx = add ? sites.length - 1 : (sites.length ? 0 : -1);
-  renderSelect(); if (idx >= 0) loadEditor();
+  if (!pendingSite) { idx = add ? sites.length - 1 : (sites.length ? 0 : -1); renderSelect(); if (idx >= 0) loadEditor(); }
   if (add) $("f_qid").focus();
   const cmds = await chrome.commands.getAll();
   $("shortcut").textContent = cmds.find(c => c.name === "save-source")?.shortcut || "(no shortcut set)";

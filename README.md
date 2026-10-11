@@ -147,3 +147,15 @@ Settings -> "Website data file": "Create a file…" / "Use an existing file…" 
 "Save all" writes it (asking first if the file changed elsewhere), "Reload from file" re-reads it. A copy is always kept in the browser and used whenever Chrome has not (re)granted
 access to the file (e.g. after a restart: "Re-grant access"); runs then say so in the last-run list and log. Optionally the Safety & politeness settings live in the file too.
 Needs a Chromium browser with the File System Access API. History log, cache and debug logs stay in the browser.
+
+## Configure a website from Wikidata (clipboard)
+Copy an item or property the way Wikidata shows it in its heading and run the extension on a page that isn't configured yet:
+
+* `Harvard Business School Online (Q133732538)` -> a new website with Name + Website item, and (from the item's "official website" P856) the URL template `https://online.hbs.edu/{path}`.
+* `Investopedia term ID (P10715)` (or just `P10715`, or its Property: URL) -> Name + Default ID property, and (from "formatter URL" P1630) the template `https://www.investopedia.com/terms/{id}.asp` (`$1` becomes `{id}`).
+
+Settings opens with the website filled in but NOT saved: add a category, check the template, press "Save all". If the website is already configured, only the missing templates are added.
+Without a URL on Wikidata the Match field is filled from the page you are on. Preferred-rank values win; deprecated ones are ignored; at most three URLs are used.
+A bare `Q123` on an unknown page is still treated as the item to save on (settings open with just the host). To pre-fill from a bare item (or from any page, known or not) use the
+"configure a website" shortcut (Alt+Shift+C). "Label (Q123)" pasted from a heading also works as the item to save on, on configured pages.
+Note: the formatter's `$1` becomes the single-segment `{id}`; if the property's values contain slashes (e.g. `f/financial-statements`), edit the template to `{path}` or use a value pattern.

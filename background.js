@@ -1,6 +1,7 @@
 import {
   normUrl, findCurrent, buildCandidates, dedupeIds, parseClipboard, checkUrl, unwrapArchive, waybackLatest,
   tsToDate, cleanTerm, alignToTerms, cats, sharesCat, usable, searchUrl, extractLinks, pickResultsDetailed, parseSearchScript, pageOp, langsOf, termsForSite, KINDS, resolveArchiveUrl, redirectProblem, robotCheckInPage, looksLikeRobotCheckHtml, textFragmentFor,
+  parseSiteClipboard, pathTemplate, formatterTemplate, usableValues,
   matchTemplates, keyFor, applyUrlMode, propForUrl, siteDefaultProp,
   DEFAULTS
 } from "./lib.js";
@@ -749,9 +750,54 @@ async function mapPool(items, size, fn) {
 }
 
 // ======================================================================
+// defining a website from the clipboard:  "Label (Q123)"  or  "Label (P123)"
+// ======================================================================
+async function fetchSiteDefinition(d, signal) {
+  const s = current?.settings || DEFAULTS;
+  const out = { label: d.label, urls: [], notes: [] };
+  if (!out.label) {
+    try {
+      const r = await api({ action: "wbgetentities", ids: d.id, props: "labels", languages: s.labelLang || "en", languagefallback: "1" }, false, signal);
+      out.label = Object.values(r.entities?.[d.id]?.labels || {})[0]?.value || "";
+    } catch (e) { if (signal.aborted) throw e; out.notes.push(`couldn't read the label of ${d.id}: ${e.message}`); }
+  }
+  const prop = d.kind === "item" ? "P856" : "P1630";               // official website  |  formatter URL
+  try {
+    const r = await api({ action: "wbgetclaims", entity: d.id, property: prop }, false, signal);
+    out.urls = usableValues(r.claims?.[prop]).slice(0, 3);
+    if (!out.urls.length) out.notes.push(`${d.id} has no ${prop} (${d.kind === "item" ? "official website" : "formatter URL"}) – add the URL template yourself`);
+  } catch (e) { if (signal.aborted) throw e; out.notes.push(`couldn't read ${prop}: ${e.message}`); }
+  return out;
+}
+
+async function defineFromClipboard(tab, signal, explicit) {
+  const d = parseSiteClipboard((await readClipboard()) || "", { allowBareItem: explicit });
+  if (!d) {
+    if (explicit) throw new RunError("To configure a website from Wikidata, copy “Label (Q123)” (an item = the website/publisher) or “Label (P123)” / P123 (an ID property), then press this shortcut.", "clipboard");
+    return null;
+  }
+  current.item = d.id;
+  setStage(`reading ${d.id} from Wikidata…`);
+  const def = await fetchSiteDefinition(d, signal);
+  const templates = def.urls.map(d.kind === "item" ? pathTemplate : formatterTemplate).filter(Boolean);
+  let host = ""; try { host = new URL(tab.url).hostname.replace(/^www\./, ""); } catch { /* ignore */ }
+  const pending = {
+    name: def.label, ...(d.kind === "item" ? { qid: d.id } : { idProperty: d.id }),
+    templates, match: templates.length ? "" : host,                       // with a template the match is derived from it
+    note: `${def.label || d.id} (${d.id})` + (templates.length ? ` · ${def.urls.join(" · ")}` : "") + (def.notes.length ? " · " + def.notes.join("; ") : "")
+  };
+  dlog("INFO", "website definition from the clipboard", pending);
+  await chrome.storage.local.set({ pendingSite: pending });
+  await chrome.tabs.create({ url: chrome.runtime.getURL("options.html?prefill=1") });
+  return { kind: "config", title: "CFG  Website pre-filled from Wikidata",
+    message: `${def.label || d.id} (${d.id}) is filled in in Settings${templates.length ? ": " + templates.join(", ") : ""}.${def.notes.length ? "\n" + def.notes.join("\n") : ""}\nAdd a category, press “Save all”, then run again on this page.` };
+}
+
+// ======================================================================
 // the run
 // ======================================================================
-async function runInner(tab, only, s, signal) {
+async function runInner(tab, only, s, signal, configure = false) {
+  if (configure) return defineFromClipboard(tab, signal, true);
   if (!tab?.url || !/^https?:/.test(tab.url)) throw new RunError("This page can't be used (not an http/https page).", "page");
   const un = unwrapArchive(tab.url);
   const href = un ? un.original : tab.url;
@@ -761,6 +807,8 @@ async function runInner(tab, only, s, signal) {
   if (fileState && !fileState.ok) dlog("WARN", "website data file: " + fileState.msg);
   const cur = findCurrent(sites, href);
   if (!cur) {
+    const def = await defineFromClipboard(tab, signal, false);          // "Label (Q123)" / "Label (P123)" on an unknown page
+    if (def) return def;
     const host = new URL(href).hostname.replace(/^www\./, "");
     await chrome.tabs.create({ url: chrome.runtime.getURL("options.html?add=" + encodeURIComponent(host)) });
     throw new RunError(`No Wikidata item configured for ${host}. Opened settings so you can add it.`, "config");
@@ -982,7 +1030,7 @@ async function runInner(tab, only, s, signal) {
   return { kind: "nothing", message: msg || "No matching pages were found on the related websites." };
 }
 
-export async function run(tab, { only = false } = {}) {
+export async function run(tab, { only = false, configure = false } = {}) {
   if (current) return; // a run is already in progress: ignore (the lock is taken synchronously, before any await)
   current = { abort: new AbortController(), stage: "starting…", done: 0, total: 0, dot: 0, startedAt: Date.now(),
     settings: DEFAULTS, blocked: new Set(), strikes: new Map(), log: [], t0: Date.now(), item: "" };
@@ -996,7 +1044,7 @@ export async function run(tab, { only = false } = {}) {
     dlog("INFO", "settings", { ...mine.settings, username: mine.settings.username ? "(set)" : "" });
     if (!tab) [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     signal.throwIfAborted();
-    outcome = await runInner(tab, only, mine.settings, signal);
+    outcome = await runInner(tab, only, mine.settings, signal, configure);
   } catch (e) {
     dlog("ERROR", e?.stack || String(e));
     const kind = signal.aborted ? "stopped" : classify(e);
@@ -1013,8 +1061,8 @@ export async function run(tab, { only = false } = {}) {
 
 chrome.commands.onCommand.addListener(async (cmd, tab) => {
   if (cmd === "stop-run") return stopRun();
-  if (cmd !== "save-source" && cmd !== "save-this-only") return;
-  run(tab, { only: cmd === "save-this-only" }); // ignored by run() while another run is active
+  if (cmd !== "save-source" && cmd !== "save-this-only" && cmd !== "configure-site") return;
+  run(tab, { only: cmd === "save-this-only", configure: cmd === "configure-site" }); // ignored by run() while another run is active
 });
 chrome.action.onClicked.addListener(tab => { if (current) stopRun(); else run(tab); });
 

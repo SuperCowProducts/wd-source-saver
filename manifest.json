@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Wikidata Source Saver",
-  "version": "2.9.0",
+  "version": "2.10.0",
   "description": "Press a shortcut to add 'described at URL' (P1343 + P2699) to the Wikidata item in your clipboard, for configured websites.",
   "permissions": [
     "activeTab",
@@ -47,6 +47,13 @@
         "mac": "Alt+Shift+X"
       },
       "description": "Stop the current run"
+    },
+    "configure-site": {
+      "suggested_key": {
+        "default": "Alt+Shift+C",
+        "mac": "Alt+Shift+C"
+      },
+      "description": "Configure a website from the item / property in the clipboard (Label (Q123) or Label (P123))"
     }
   },
   "icons": {

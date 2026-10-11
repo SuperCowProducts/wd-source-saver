@@ -377,6 +377,8 @@ export function originsFor(sites) {
 export function parseClipboard(text) {
   const t = String(text || "").trim();
   if (!t || t.length > 600) return null;
+  const lm = t.match(/^([^\n\r]{1,150}?)\s*\((Q\d+)\)$/);                    // "Pythagorean theorem (Q11518)"
+  if (lm && !/[{}\[\]<>"]/.test(lm[1])) return { item: lm[2], extras: [] };
   const m = t.match(/^(?:https?:\/\/(?:www\.|m\.)?wikidata\.org\/(?:wiki|entity)\/)?(Q\d+)(?![\w])[^\s,;]*/i);
   if (!m) return null;
   const extras = [];
@@ -390,6 +392,40 @@ export function parseClipboard(text) {
     if (extras.length >= 12) break;
   }
   return { item: m[1].toUpperCase(), extras };   // extras: [{text, words, lang}]
+}
+
+// ---------- defining a website from an item / property ----------
+//   "Harvard Business School Online (Q133732538)"   "Investopedia term ID (P10715)"   "P10715"   https://www.wikidata.org/wiki/Property:P10715
+// A bare item (Q123) is ambiguous (it is also what you normally copy to SAVE statements on), so it only counts when asked for explicitly.
+export function parseSiteClipboard(text, { allowBareItem = false } = {}) {
+  const t = String(text || "").trim();
+  if (!t || t.length > 250 || /[\n\r]/.test(t)) return null;
+  let m = t.match(/^(.{1,150}?)\s*\(([QP]\d+)\)$/i);
+  if (m && !/[{}\[\]<>"]/.test(m[1])) { const id = m[2].toUpperCase(); return { id, kind: id[0] === "P" ? "property" : "item", label: m[1].trim() }; }
+  const head = "(?:https?:\\/\\/(?:www\\.|m\\.)?wikidata\\.org\\/(?:wiki|entity)\\/)?";
+  m = t.match(new RegExp("^" + head + "(?:Property:)?(P\\d+)(?:[#?].*)?$", "i"));
+  if (m) return { id: m[1].toUpperCase(), kind: "property", label: "" };
+  if (allowBareItem) {
+    m = t.match(new RegExp("^" + head + "(Q\\d+)(?:[#?].*)?$", "i"));
+    if (m) return { id: m[1].toUpperCase(), kind: "item", label: "" };
+  }
+  return null;
+}
+// official website (P856)  https://online.hbs.edu/   ->  https://online.hbs.edu/{path}
+export function pathTemplate(v) {
+  try { const u = new URL(String(v).trim()); if (!/^https?:$/.test(u.protocol)) return null; return `${u.origin}${u.pathname.endsWith("/") ? u.pathname : u.pathname + "/"}{path}`; }
+  catch { return null; }
+}
+// formatter URL (P1630)  https://www.investopedia.com/terms/$1.asp  ->  …/terms/{id}.asp
+export function formatterTemplate(f) {
+  const s = String(f || "").trim();
+  return /^https?:\/\//i.test(s) && s.includes("$1") ? s.split("$1").join("{id}") : null;
+}
+// string values worth using: not deprecated; preferred rank wins over normal
+export function usableValues(claims) {
+  const ok = (claims || []).filter(c => c.rank !== "deprecated" && c.mainsnak?.snaktype === "value" && typeof c.mainsnak.datavalue?.value === "string");
+  const pref = ok.filter(c => c.rank === "preferred");
+  return [...new Set((pref.length ? pref : ok).map(c => c.mainsnak.datavalue.value.trim()))];
 }
 
 // ---------- statement identity (for the history log) ----------

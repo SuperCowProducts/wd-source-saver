@@ -252,10 +252,29 @@ export function altForms(word) {
   return [...new Set(out)].filter(x => x.toLowerCase() !== l);
 }
 
+// "economy of scale" -> the noun that takes the plural is "economy", not "scale". The head noun is the word before the
+// first preposition/conjunction (if there is one after at least one other word); otherwise it is the last word.
+const LINKERS = new Set(["of", "for", "in", "on", "to", "with", "from", "by", "per", "at", "and", "vs", "versus"]);
+export function headIndex(words) {
+  for (let i = 1; i < words.length; i++) if (LINKERS.has(words[i].toLowerCase())) return i - 1;
+  return words.length - 1;
+}
+// All spellings worth trying: the term itself, then other number forms of the head noun (and of the last word when it differs)
+export function wordVariants(words, max = 3) {
+  if (!words.length) return [words];
+  const out = [words], seen = new Set([words.join(" ").toLowerCase()]);
+  const idxs = [...new Set([headIndex(words), words.length - 1])];
+  for (const i of idxs) for (const f of altForms(words[i]).slice(0, 2)) {
+    const w = words.slice(); w[i] = f;
+    const k = w.join(" ").toLowerCase();
+    if (!seen.has(k)) { seen.add(k); out.push(w); }
+  }
+  return out.slice(0, max + 1);
+}
+
 export function termForms(words, site) {
   if (!site.plurals || !words.length) return [words];
-  const head = words.slice(0, -1);
-  return [words, ...altForms(words[words.length - 1]).slice(0, 2).map(f => [...head, f])];
+  return wordVariants(words);
 }
 
 // ---------- which configured site is this URL? ----------
@@ -613,9 +632,7 @@ export function pickResultsDetailed(links, site, terms, searchPage) {
   const max = Number(site.searchMax) || 5;
   const termNorms = [...new Set(terms.map(t => normText(t.text)).filter(Boolean))];
   const slugs = [...new Set(termNorms.flatMap(t => {
-    const w = t.split(" "), base = [t.replace(/ /g, "-")];
-    for (const f of altForms(w[w.length - 1]).slice(0, 2)) base.push([...w.slice(0, -1), f].join("-"));   // one-sided-limit / one-sided-limits
-    return base;
+    return wordVariants(t.split(" ")).map(w => w.join("-"));   // one-sided-limit / one-sided-limits, economy-of-scale / economies-of-scale
   }))];
   const re = site.searchRegex ? safeRegex(site.searchRegex) : null;
   const exclude = site.searchExclude ? safeRegex(site.searchExclude) : null;

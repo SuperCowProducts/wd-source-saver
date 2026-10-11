@@ -131,7 +131,8 @@ become `first words,last words`. Only the page you are on gets it (never the URL
 Settings: global switch + per-website override (Advanced).
 
 ## Plural-tolerant URL matching in searches
-In "URL contains the term" mode the singular/plural spelling of the last word is also accepted (term "one sided limit" finds `.../one-sided-limits-from-graphs-asymptote`).
+In "URL contains the term" mode the singular/plural spelling of the main noun is also accepted (term "one sided limit" finds `.../one-sided-limits-from-graphs-asymptote`).
+The main noun is the last word, or the word before "of / for / in / on / to / with / from / by / per / at / and" (term "economy of scale" also tries `economies-of-scale`).
 
 ## Redirects and spelling corrections
 The address a page (or the Wayback Machine) ENDS on decides what is written: `Harmonic_Number` -> `Harmonic_number` is stored as `Harmonic_number` (value, URL and P1065).

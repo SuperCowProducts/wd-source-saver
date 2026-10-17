@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Wikidata Source Saver",
-  "version": "2.10.0",
-  "description": "Press a shortcut to add 'described at URL' (P1343 + P2699) to the Wikidata item in your clipboard, for configured websites.",
+  "version": "2.11.0",
+  "description": "Press a shortcut to add 'described at URL' (P1343 + P2699) to the Wikidata item or lexeme in your clipboard, for configured websites.",
   "permissions": [
     "activeTab",
     "clipboardRead",
@@ -20,7 +20,7 @@
     "type": "module"
   },
   "action": {
-    "default_title": "Save this page as a source on the Wikidata item in your clipboard"
+    "default_title": "Save this page as a source on the Wikidata item or lexeme in your clipboard"
   },
   "options_ui": {
     "page": "options.html",
@@ -32,7 +32,7 @@
         "default": "Alt+Shift+S",
         "mac": "Alt+Shift+S"
       },
-      "description": "Save current URL (and the same term on related websites) as P1343/P2699 on the item in the clipboard"
+      "description": "Save current URL (and the same term on related websites) as P1343/P2699 on the item or lexeme in the clipboard"
     },
     "save-this-only": {
       "suggested_key": {

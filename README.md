@@ -3,7 +3,9 @@
 Install: chrome://extensions -> Developer mode -> Load unpacked (or Reload). Be logged in to wikidata.org.
 
 ## Use
-1. Copy a Wikidata item: `Q42` or its URL (the clipboard must START with the item; pasted JSON/other text is rejected).
+1. Copy a Wikidata item or lexeme: `Q42`, `L1234` or its URL (the clipboard must START with the entity; pasted JSON/other text is rejected).
+   Lexemes work the same way as items; a form (`L1234-F1`, or `…/Lexeme:L1234#F1`) or a sense (`L1234-S1`) is edited directly, so the
+   statements land on that form/sense.
    Optional extra terms after it, separated by commas, semicolons or new lines; several words per term are fine, and a
    language tag applies to the terms after it:  `Q123, en: Pythagorean theorem, it: teorema di Pitagora`
    (terms before any tag go to every website).
@@ -14,7 +16,10 @@ Install: chrome://extensions -> Developer mode -> Load unpacked (or Reload). Be 
 ## What it does
 * Terms come ONLY from the page's own ID and the extras you type. Wikidata labels and aliases are never used. Nothing is
   guessed; terms with symbols/formulas/>6 words are dropped. For a run-together ID (PythagoreanTheorem) the words are read
-  from the capitals, or from a matching extra. Each website has a language list and only receives terms in its language(s)
+  from the capitals, or from a matching extra. An all-lowercase run-together ID on an English site (investopedia `incomestatement`)
+  is split with a bundled English word list (`wordlist-en.js`, ~60k most frequent words, Viterbi on word frequency): it becomes
+  "income statement". If any part is not a known word, or the split leaves tiny fragments (ebitda -> eb it da), it is left
+  alone, and a matching extra always wins. Each website has a language list and only receives terms in its language(s)
   (no language on either side = no restriction).
 * Template URLs of sites in the same category(ies) are checked; sites with their own search engine are searched
   with the item's label; pages that exist (or have a Wayback snapshot, for "unreliable" sites) are proposed.
@@ -103,6 +108,48 @@ a symbol on the toolbar icon (found/checked, e.g. 7/12; stays until you return t
 ## Review window
 The item, every URL, the page of an ID-property row, Wayback dates and the "already on the item" lines are clickable links (new tab).
 
+### Categories that follow the URL
+The Categories field may contain a `{a|b}` group. It follows the `{x|y}` choice of the template that matched the current page, by position.
+With the template `https://www.ebsco.com/research-starters/{economics|mathematics}/{id}` and categories `{ec|mt}, research`, a page under
+`/economics/` searches the websites in `ec` + `research`, a page under `/mathematics/` those in `mt` + `research`. If the page matches no
+template (or the group and the choice have a different number of options) every alternative is used. For OTHER websites a group simply means
+"belongs to all of them". The category actually used shows in the debug log ("matched website … categories") and the choice in "ID read from the URL".
+
+### YouTube videos
+On a video page (`/watch`, `/shorts`, `/live`) the URL only holds the video ID, but the channel's handle is embedded in the page. The page is
+read (the channel link under the video, then the embedded author data, then the player data) and Wikidata is asked which item has
+**YouTube handle (P11245)** = that handle (with or without `@`, as typed or lower-case). That channel item becomes the value of
+`P1343` and the video goes in as the qualifier **`P1651` (YouTube video ID)**: `P1343: <channel item>` + `P1651: <video ID>` (no P2699 URL, and nothing is saved as a separate P11245/P1651 statement).
+Video IDs behave like URLs do for other websites: they go into the item's existing P1343 statement for that channel (which may also hold P2699
+URLs, e.g. a website with its own content that also has a YouTube channel), or several new ones share ONE new statement, so two videos of the
+same channel are not split into two P1343. A video ID that is already there counts as "already there", and a Wayback link is only attached to a
+statement that holds exactly that one ID. If the handle isn't on the page, no item has it, or several do, the page is saved the way the website is configured and the
+reason is listed under "not saved". Editing the URL in the review window re-reads the video ID from it. A video ID is not a word, so it is not
+searched for on other websites (your typed extras still are).
+
+### Singular / plural in searches
+Websites with "plural / singular forms" ticked are now searched with both numbers of the main noun, not only the page's own spelling
+("financial statements" and "financial statement"; at most 4 queries per website).
+
+### Editing a URL
+Every row with an address has an "edit URL" button. The typed address is checked as you type: it must be an http(s) URL; for an ID
+row (a template with a property) the ID is re-read from it and shown (`→ P10715: i/income-statement`), and an address that matches none of the
+website's templates is refused (the field turns red and Save is disabled). A warning appears if the host differs from the original.
+On Save the old Wayback link is dropped and looked up again for the new address (when the website has "archive" on), the row is compared with
+the item again (so it may turn out to be "already there"), and the history log records the edited address. The edited address is
+**not** fetched to see if the page exists, and the website's URL mode (strip query/fragment) is not applied: it is saved exactly as typed.
+"undo" restores the original.
+
+### Sending rows to other items / lexemes
+Each row has a "goes to:" field (empty = the item above). Type or paste `Q123`, `L123`, `L123-F1` / `L123-S1` or a wikidata.org URL;
+a short name of the target is shown next to it so a typo is easy to spot. Nothing is retyped twice:
+* the bar at the top takes a target once and sets it on **ticked rows**, **all rows**, or (via the "→ Q123" button that appears on each row)
+  on any single row; "reset all" sends everything back to the main item;
+* the field offers the main item and the items/lexemes you saved to before (from the history log) as suggestions.
+On Save the rows sent elsewhere are compared with THAT entity (so "already there" and the shared P1343 statement are worked out for it) and saved
+in one edit per target; each edit obeys the edit-rate limits and "max per edit". The Save button shows the split (`Q42: 3, Q99: 2`), the
+history log records every row under the entity it went to, and if a later edit fails what was already saved is listed in the message.
+
 ## IDs spanning several directories: {path}
 `{id}` is ONE path segment. Use `{path}` when the ID is several directories, e.g.
 `P99999 https://www.encyclopedia.com/{path}` matches `.../history/encyclopedias-almanacs-transcripts-and-maps/industrial-capitalism`
@@ -160,3 +207,20 @@ Without a URL on Wikidata the Match field is filled from the page you are on. Pr
 A bare `Q123` on an unknown page is still treated as the item to save on (settings open with just the host). To pre-fill from a bare item (or from any page, known or not) use the
 "configure a website" shortcut (Alt+Shift+C). "Label (Q123)" pasted from a heading also works as the item to save on, on configured pages.
 Note: the formatter's `$1` becomes the single-segment `{id}`; if the property's values contain slashes (e.g. `f/financial-statements`), edit the template to `{path}` or use a value pattern.
+
+## IDs that are inside the page, not in the URL
+Some websites put the slug in the URL but keep the real ID in the page (e.g. `…/dictionary/automobile_adj`, ID `8269459060` inside). Settings -> website -> Advanced ->
+**ID from the page**: one "place" per line, the first that yields a value wins:
+
+    meta NAME [| regex]             <meta name|property|itemprop="NAME" content="…">
+    css SELECTOR [@attr] [| regex]  text (or attribute) of the first element matching the selector
+    jsonld KEY [| regex]            value of KEY anywhere in the page's JSON-LD blocks
+    html REGEX   (or just REGEX)    regular expression over the HTML source; group 1 = the ID (no group = whole match)
+
+`| regex` narrows what was found (group 1, or the whole match). Examples: `meta citation_doi | /(\d+)$`, `css link[rel=canonical] @href | (\d+)`, `jsonld identifier`, `html "entryId"\s*:\s*"?(\d+)`.
+* Give the website an ID property and a template as usual (`P1234 https://example.org/dictionary/{id}`): the template reads the WORDS from the URL (for searching other websites);
+  the **value** stored in the property comes from the page. An "ID value pattern" may use `{id}` for the value read (e.g. `OED-{id}`).
+* The page you are on is read from the open tab. URL guesses on other websites and search results that belong to such a website are fetched and read the same way
+  (one extra request per page, same politeness rules). Tick **send my browser's cookies** for logged-in/subscription sites. An edited address in the review window is re-read when you save.
+* From a web.archive.org snapshot, or when the page can't be fetched, nothing is saved for it (the slug is never stored as the ID); the reason is listed under "not saved".
+* If no line matches, the debug log shows snippets around long numbers on the page, so a line can be written.

@@ -14,7 +14,8 @@ function linkify(text, parent) {
   }
   if (last < text.length) parent.append(text.slice(last));
 }
-const itemLink = q => /^Q\d+$/.test(q) ? mkLink("https://www.wikidata.org/wiki/" + q, q) : document.createTextNode(q);
+const entityUrl = q => { const m = String(q || "").match(/^(?:(Q\d+)|(L\d+)(?:-([FS]\d+))?)$/); return m ? "https://www.wikidata.org/wiki/" + (m[1] || "Lexeme:" + m[2] + (m[3] ? "#" + m[3] : "")) : null; };
+const itemLink = q => entityUrl(q) ? mkLink(entityUrl(q), q) : document.createTextNode(q);
 const done = v => chrome.runtime.sendMessage(v === null ? { type: "review-done", id, cancel: true } : { type: "review-done", id, selected: v });
 
 (async () => {

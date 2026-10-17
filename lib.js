@@ -1,3 +1,4 @@
+import { EN_WORDS } from "./wordlist-en.js";
 // Shared helpers (used by the background service worker, the options page and the review page)
 
 export const DEFAULTS = {
@@ -33,8 +34,24 @@ const sameUrlLoose = (a, b) => normUrl(a).toLowerCase() === normUrl(b).toLowerCa
 
 
 // a website can belong to several categories: "math, geometry"
-export const cats = s => String(s.category || "").split(/[,;]/).map(x => x.trim().toLowerCase()).filter(Boolean);
-export const sharesCat = (a, b) => { const cb = cats(b); return cats(a).some(c => cb.includes(c)); };
+// An entry may be a choice group that follows the {a|b} choice of the template that matched the page URL:
+//   templates  https://www.ebsco.com/research-starters/{economics|mathematics}/{id}
+//   categories {ec|mt}              -> a page under /economics/ searches category ec, under /mathematics/ category mt
+const catEntries = s => String(s.category || "").split(/[,;]/).map(x => x.trim().toLowerCase()).filter(Boolean)
+  .map(x => { const m = x.match(/^\{([^{}]*\|[^{}]*)\}$/); return m ? m[1].split("|").map(y => y.trim()).filter(Boolean) : x; });
+// all categories the website can belong to (a choice group counts with every alternative)
+export const cats = s => [...new Set(catEntries(s).flat())];
+// the categories of the CURRENT page: choice groups resolved by what the page URL matched (all alternatives when unknown)
+export function catsFor(site, extracted) {
+  const out = [];
+  for (const e of catEntries(site)) {
+    if (!Array.isArray(e)) { out.push(e); continue; }
+    const ch = (extracted?.choices || []).find(c => c.of === e.length);
+    out.push(...(ch ? [e[ch.index]] : e));
+  }
+  return [...new Set(out)];
+}
+export const sharesCat = (a, b) => { const cb = cats(b); return (Array.isArray(a) ? a : cats(a)).some(c => cb.includes(c)); };
 
 // A template line may start with the Wikidata property that stores its ID:
 //   P9999 https://www.econlib.org/library/Enc/{id}.html      -> saved as  P9999: <id>
@@ -68,11 +85,20 @@ export function templateProp(site, tpl) {
   const p = t && t.prop !== null ? t.prop : siteDefaultProp(site);
   return p === "P1343" ? "" : p;
 }
+// IDs that the URL does not contain but the PAGE does. A website lists where to look, one "place" per line; the first line that yields a value wins:
+//   meta NAME [| regex]            <meta name|property|itemprop="NAME" content="…">
+//   css SELECTOR [@attr] [| regex] text (or attribute) of the first element matching a CSS selector
+//   jsonld KEY [| regex]           value of KEY anywhere in the page's JSON-LD blocks
+//   html REGEX  (or just REGEX)    a regular expression over the page's HTML source; group 1 = the ID (no group = whole match)
+// "| regex" narrows the value that was found (group 1, or the whole match). The URL template still gives the WORDS of the page;
+// only the VALUE of the ID property comes from the page ({id} in an "ID value pattern" stands for it).
+export const pageIdPatterns = site => (Array.isArray(site.pageId) ? site.pageId : String(site.pageId || "").split(/\r?\n/)).map(x => String(x).trim()).filter(Boolean);
 export const usable = s => !!(s.qid || s.idProperty || parseTemplates(s).some(t => t.prop && t.prop !== "P1343"));
 // for a URL that came from a search: which property + value? (value null = can't be read)
 export function propForUrl(site, url) {
   const m = matchTemplates(site, url);
-  if (m) return { prop: m.prop, value: m.value };
+  const fromPage = pageIdPatterns(site).length > 0;                     // the ID is only on the page: a URL alone can't give it
+  if (m) return { prop: m.prop, value: m.prop && fromPage ? null : m.value };
   const prop = siteDefaultProp(site) === "P1343" ? "" : siteDefaultProp(site);
   return { prop, value: null };
 }
@@ -118,7 +144,7 @@ const PH = /(\{[^{}]+\})/; // {id} {first} {FIRST} or a choice group {a|b|c}
 function templateRegex(tpl) {
   const t = stripProto(tpl);
   let src = "", groups = 0, idGroup = 0, multi = false;
-  const names = [];
+  const names = [], choiceDefs = [];
   for (const part of t.split(PH)) {
     if (part === "{path}") {                      // several directories: history/encyclopedias/industrial-capitalism
       if (idGroup) src += "\\" + idGroup; else { src += "([^?#]+)"; idGroup = ++groups; names.push("id"); multi = true; }
@@ -126,10 +152,11 @@ function templateRegex(tpl) {
     else if (part === "{id}") { if (idGroup) src += "\\" + idGroup; else { src += "([^/?#]+)"; idGroup = ++groups; names.push("id"); } }
     else if (part === "{first}" || part === "{FIRST}") { src += "([^/?#]+)"; groups++; names.push("first"); }
     else if (/^\{[^{}]*\|[^{}]*\}$/.test(part)) {
-      src += "(?:" + part.slice(1, -1).split("|").map(x => esc(x.trim())).join("|") + ")";
+      const alts = part.slice(1, -1).split("|").map(x => x.trim()).filter(Boolean);
+      src += "(" + alts.map(esc).join("|") + ")"; groups++; names.push("choice"); choiceDefs.push(alts);   // captured: which alternative the URL used
     } else src += esc(part);
   }
-  return { re: new RegExp("^" + src + "/?$", "i"), hasQuery: t.includes("?"), names, multi };
+  return { re: new RegExp("^" + src + "/?$", "i"), hasQuery: t.includes("?"), names, multi, choiceDefs };
 }
 
 export function effectiveMatch(site) {
@@ -284,7 +311,7 @@ export function matchTemplates(site, urlStr) {
   const path = host + u.pathname;
   let best = null;
   for (const tpl of cleanTemplates(site)) {
-    const { re, hasQuery, names, multi } = templateRegex(tpl);
+    const { re, hasQuery, names, multi, choiceDefs } = templateRegex(tpl);
     const m = (hasQuery ? path + u.search : path).match(re);
     if (m && (!best || tpl.length > best.score)) {
       let idEnc = m[names.indexOf("id") + 1];
@@ -297,7 +324,12 @@ export function matchTemplates(site, urlStr) {
       if (sep === "plus") raw = raw.replace(/\+/g, " ");
       try { raw = decodeURIComponent(raw); } catch { /* keep */ }
       let slug = slugEnc; try { slug = decodeURIComponent(slugEnc); } catch { /* keep */ }
-      best = { score: tpl.length, template: tpl, raw, slug, multi, sep, prop: templateProp(site, tpl), words: splitWords(slugEnc, sep),
+      let ci = 0;                                            // which alternative of each {a|b} group did the URL use?
+      const choices = names.map((n, i) => n === "choice" ? m[i + 1] : null).filter(v => v !== null).map(v => {
+        const alts = choiceDefs[ci++];
+        return { value: v, index: Math.max(0, alts.findIndex(a => a.toLowerCase() === v.toLowerCase())), of: alts.length };
+      });
+      best = { score: tpl.length, template: tpl, raw, slug, multi, sep, choices, prop: templateProp(site, tpl), words: splitWords(slugEnc, sep),
         value: fillValue(valuePattern(site, tpl), { raw, first }) };   // what is stored in the ID property
     }
   }
@@ -330,6 +362,42 @@ export function findCurrent(sites, tabUrl) {
 
 // For IDs without separators (MonotonicFunction, FundamentalTheoremofArithmetic) the words can't be known from
 // the URL alone. Only accept a reading that matches a term we got from Wikidata (label/alias) or the clipboard.
+// ---------- splitting run-together IDs ("incomestatement" -> income statement) ----------
+// Viterbi over a frequency-ranked English word list (Zipf's law: cost of a word ~ log(rank)), like the wordninja library.
+let _seg = null;
+function segModel() {
+  if (_seg) return _seg;
+  const words = EN_WORDS.split(" "), cost = new Map(), lg = Math.log(words.length);
+  words.forEach((w, i) => cost.set(w, Math.log((i + 1) * lg)));
+  return (_seg = { cost, max: words.reduce((m, w) => Math.max(m, w.length), 0) });
+}
+// Returns an array of words, or null when the string does not split into at least two known words
+export function segmentWords(str) {
+  const { cost, max } = segModel();
+  const out = [];
+  for (const run of String(str).toLowerCase().match(/[a-z]+|\d+/g) || []) {
+    if (/^\d/.test(run)) { out.push(run); continue; }
+    const n = run.length, best = [0], from = [0];
+    for (let i = 1; i <= n; i++) {
+      let bc = Infinity, bk = 0;
+      for (let k = Math.max(0, i - max); k < i; k++) {
+        const c = cost.get(run.slice(k, i));
+        const t = best[k] + (c === undefined ? 9e9 : c);
+        if (t < bc) { bc = t; bk = k; }
+      }
+      best[i] = bc; from[i] = bk;
+    }
+    if (best[n] >= 9e9) return null;                                   // some part is not a known word: do not guess
+    const parts = [];
+    for (let i = n; i > 0; i = from[i]) parts.unshift(run.slice(from[i], i));
+    out.push(...parts);
+  }
+  if (out.length < 2) return null;
+  // tiny fragments are usually a bad split (ebitda -> eb it da): only real short words are allowed
+  return out.every(w => w.length > 2 || /^\d/.test(w) || SHORT_OK.has(w)) ? out : null;
+}
+const SHORT_OK = new Set("a i of to in on an as at by is it or no so up us we he be do go my me if vs and the for".split(" "));
+
 export function alignToTerms(extracted, terms) {
   const key = s => normText(s).replace(/ /g, "");
   const k = key(extracted.slug ?? extracted.raw);
@@ -348,11 +416,12 @@ export function dedupeIds(ids) {
 }
 
 // ---------- candidates on related websites ----------
-export function buildCandidates(sites, currentSite, ids, { perSite = 30, total = 90 } = {}) {
-  if (!cats(currentSite).length) return [];
+export function buildCandidates(sites, currentSite, ids, { perSite = 30, total = 90, curCats = null } = {}) {
+  const mine = curCats || cats(currentSite);               // curCats: the categories of this page (choice groups resolved)
+  if (!mine.length) return [];
   const out = [], seen = new Set(), count = new Map();
   for (const id of ids) for (const site of sites) {
-    if (!usable(site) || !sharesCat(currentSite, site) || !langOk(id, site)) continue;
+    if (!usable(site) || !sharesCat(mine, site) || !langOk(id, site)) continue;
     for (const sep of sepList(site)) for (const words of termForms(id.words, site)) {
       const parts = idParts(words, { ...site, separator: sep });
       for (const tpl of buildableTemplates(site)) for (const url of buildUrls(tpl, parts)) {
@@ -361,8 +430,9 @@ export function buildCandidates(sites, currentSite, ids, { perSite = 30, total =
         const k = normUrl(url);
         if (seen.has(k)) continue;
         seen.add(k); count.set(site, n + 1);
-        out.push({ site, template: tpl, url, prop: templateProp(site, tpl), sep,
-          value: fillValue(valuePattern(site, tpl), { raw: parts.raw, first: parts.rawLower }) });
+        const prop = templateProp(site, tpl), fromPage = !!prop && pageIdPatterns(site).length > 0;   // fromPage: the ID value is read from the page once it is found
+        out.push({ site, template: tpl, url, prop, sep, fromPage,
+          value: fromPage ? null : fillValue(valuePattern(site, tpl), { raw: parts.raw, first: parts.rawLower }) });
       }
     }
   }
@@ -387,7 +457,8 @@ export function originsFor(sites) {
 }
 
 // ---------- clipboard ----------
-// The clipboard must START with the item: "Q123" or a Wikidata URL (…/wiki/Q123, …/entity/Q123).
+// The clipboard must START with the entity: an item "Q123", or a lexeme "L123" (also a form "L123-F1" or sense "L123-S1"),
+// or a Wikidata URL (…/wiki/Q123, …/entity/Q123, …/wiki/Lexeme:L123, …/wiki/Lexeme:L123#F1).
 // Optional extra terms follow, separated by commas, semicolons or new lines. Multi-word terms are fine, and a
 // language tag ("it:") applies to itself and to the untagged terms after it, until the next tag:
 //     Q123, en: Pythagorean theorem, Pythagoras' theorem, it: teorema di Pitagora
@@ -396,10 +467,11 @@ export function originsFor(sites) {
 export function parseClipboard(text) {
   const t = String(text || "").trim();
   if (!t || t.length > 600) return null;
-  const lm = t.match(/^([^\n\r]{1,150}?)\s*\((Q\d+)\)$/);                    // "Pythagorean theorem (Q11518)"
-  if (lm && !/[{}\[\]<>"]/.test(lm[1])) return { item: lm[2], extras: [] };
-  const m = t.match(/^(?:https?:\/\/(?:www\.|m\.)?wikidata\.org\/(?:wiki|entity)\/)?(Q\d+)(?![\w])[^\s,;]*/i);
+  const lm = t.match(/^([^\n\r]{1,150}?)\s*\((Q\d+|L\d+(?:-[FS]\d+)?)\)$/i);      // "Pythagorean theorem (Q11518)", "run (L1234)"
+  if (lm && !/[{}\[\]<>"]/.test(lm[1])) return { item: lm[2].toUpperCase(), extras: [] };
+  const m = t.match(/^(?:https?:\/\/(?:www\.|m\.)?wikidata\.org\/(?:wiki|entity)\/)?(?:(Q\d+)(?![\w])|(?:Lexeme:)?(L\d+)(?:-([FS]\d+)|#([FS]\d+))?(?![\w-]))[^\s,;]*/i);
   if (!m) return null;
+  const id = m[1] ? m[1].toUpperCase() : m[2].toUpperCase() + ((m[3] || m[4]) ? "-" + (m[3] || m[4]).toUpperCase() : "");
   const extras = [];
   let lang = "";
   for (const piece of t.slice(m[0].length).split(/[,;\n\r]+/)) {
@@ -410,7 +482,7 @@ export function parseClipboard(text) {
     if (term && !extras.some(e => e.lang === lang && e.text.toLowerCase() === term.text.toLowerCase())) extras.push({ ...term, lang });
     if (extras.length >= 12) break;
   }
-  return { item: m[1].toUpperCase(), extras };   // extras: [{text, words, lang}]
+  return { item: id, extras };   // item = Q123 / L123 / L123-F1 / L123-S1;  extras: [{text, words, lang}]
 }
 
 // ---------- defining a website from an item / property ----------
@@ -447,6 +519,13 @@ export function usableValues(claims) {
   return [...new Set((pref.length ? pref : ok).map(c => c.mainsnak.datavalue.value.trim()))];
 }
 
+// Page on wikidata.org for an entity id (Q123, L123, L123-F1, L123-S1); null when it is none of those
+export function entityUrl(id) {
+  const m = String(id || "").match(/^(?:(Q\d+)|(L\d+)(?:-([FS]\d+))?)$/);
+  if (!m) return null;
+  return "https://www.wikidata.org/wiki/" + (m[1] || "Lexeme:" + m[2] + (m[3] ? "#" + m[3] : ""));
+}
+
 // ---------- statement identity (for the history log) ----------
 export function keyFor(site, url, value, prop) {
   return prop ? `I|${prop}|${value}` : `S|${(site.qid || "").toUpperCase()}|${normUrl(url).toLowerCase()}`;
@@ -476,9 +555,9 @@ export function redirectProblem(site, from, to) {
 // ---------- does the page exist? ----------
 const plainFetch = (u, o = {}) => { const { timeoutMs, ...rest } = o; return fetch(u, rest); };
 
-export async function checkUrl(url, site, settings, fetcher = plainFetch, signal) {
+export async function checkUrl(url, site, settings, fetcher = plainFetch, signal, wantBody = false) {
   try {
-    const res = await fetcher(url, { redirect: "follow", credentials: "omit", timeoutMs: 10000, signal });
+    const res = await fetcher(url, { redirect: "follow", credentials: site.cookies ? "include" : "omit", timeoutMs: 10000, signal });
     if (!res.ok) { res.body?.cancel(); return { found: false, reason: `HTTP ${res.status}`, definitive: [404, 410].includes(res.status) }; }
     const finalUrl = res.url || url;
     if (!sameUrlLoose(finalUrl, url)) {            // case / trailing slash / www / http-https differences are always fine
@@ -488,12 +567,16 @@ export async function checkUrl(url, site, settings, fetcher = plainFetch, signal
       const why = redirectProblem(site, url, finalUrl);
       if (why) { res.body?.cancel(); return { found: false, reason: `redirected to ${finalUrl} – not accepted: ${why}`, definitive: true }; }
     }
-    if (site.notFound && site.notFound.trim()) {
+    let html;
+    if ((site.notFound && site.notFound.trim()) || wantBody) {
       const body = await res.text();
-      try { if (new RegExp(site.notFound, "i").test(body)) return { found: false, reason: "matched 'not found' text", definitive: true }; }
-      catch { /* bad regex: ignore */ }
+      if (wantBody) html = body.slice(0, 6e6);
+      if (site.notFound && site.notFound.trim()) {
+        try { if (new RegExp(site.notFound, "i").test(body)) return { found: false, reason: "matched 'not found' text", definitive: true }; }
+        catch { /* bad regex: ignore */ }
+      }
     } else res.body?.cancel();
-    return { found: true, url: finalUrl.split("#")[0] };
+    return { found: true, url: finalUrl.split("#")[0], ...(html !== undefined ? { html } : {}) };
   } catch (e) {
     if (e.blocked) return { found: false, reason: "host rate-limited/blocking – stopped contacting it" };
     if (signal?.aborted) return { found: false, reason: "stopped", stopped: true };
@@ -827,6 +910,109 @@ export function looksLikeRobotCheckHtml(html) {
   return looksLikeRobotCheckText(title + " " + text, (s.match(/<a\b[^>]*href/gi) || []).length);
 }
 // Runs INSIDE the page – must stay self-contained.
+// ---------- IDs that the URL does not show but the page carries ----------
+// YouTube: a video page's source is the CHANNEL (the Wikidata item whose YouTube handle, P11245, equals the handle embedded in the page).
+export const PAGE_SCRAPERS = [{
+  name: "YouTube channel handle",
+  test: u => /(^|\.)youtube\.com$/i.test(u.hostname) && /^\/(watch|shorts|live|embed)\b/.test(u.pathname),
+  func: youtubeInPage,
+  prop: "P11245",                                     // property that holds the scraped value on the item to use as the source
+  qualProp: "P1651",                                  // the video ID is a qualifier of the P1343 statement (instead of the URL, P2699)
+  idFromUrl: u => u.searchParams.get("v") || (u.pathname.match(/^\/(?:shorts|live|embed)\/([\w-]{6,})/) || [])[1] || "",
+  noTerms: true                                       // a video ID is not a word: do not search other websites for it
+}];
+export const scraperFor = urlStr => { try { const u = new URL(urlStr); return PAGE_SCRAPERS.find(x => x.test(u)) || null; } catch { return null; } };
+
+// runs INSIDE the page (chrome.scripting.executeScript): self-contained, returns {value, from}
+export function youtubeInPage() {
+  const handleOf = h => {
+    try { const m = decodeURIComponent(new URL(h, location.href).pathname).match(/^\/@([^/]+)/); return m ? m[1] : ""; } catch { return ""; }
+  };
+  // 1. the channel link under the video (always the current video; the page is a single-page app, so it beats the old JSON blobs)
+  for (const sel of ['ytd-watch-metadata ytd-video-owner-renderer a[href*="/@"]', "#owner a[href*='/@']", "#upload-info a[href*='/@']",
+                     "ytd-reel-video-renderer[is-active] a[href*='/@']", 'ytd-channel-name a[href*="/@"]']) {
+    const a = document.querySelector(sel); const h = a && handleOf(a.getAttribute("href"));
+    if (h) return { value: h, from: "channel link under the video" };
+  }
+  // 2. structured data embedded in the page: <span itemprop="author"><link itemprop="url" href="…/@handle">
+  const l = document.querySelector('[itemprop="author"] link[itemprop="url"], link[itemprop="url"][href*="/@"]');
+  const h2 = l && handleOf(l.getAttribute("href"));
+  if (h2) return { value: h2, from: "embedded author data" };
+  // 3. the player response: "ownerProfileUrl":"http://www.youtube.com/@handle"
+  for (const sc of document.scripts) {
+    const t = sc.textContent;
+    if (!t || t.length > 4e6 || !t.includes("ownerProfileUrl")) continue;
+    const m = t.match(/"ownerProfileUrl":"[^"]*?\/(@[^"\\/]+)"/);
+    if (m) { try { return { value: decodeURIComponent(m[1].slice(1)), from: "player data" }; } catch { return { value: m[1].slice(1), from: "player data" }; } }
+  }
+  return { value: "", from: "" };
+}
+
+// runs INSIDE the page (chrome.scripting.executeScript): self-contained. The HTML is analysed in the offscreen document (extractPageId),
+// so the page you are on and pages that were only fetched go through the same code.
+export function pageHtmlInPage() {
+  const h = document.documentElement ? document.documentElement.outerHTML : "";
+  return h.length > 6e6 ? h.slice(0, 6e6) : h;
+}
+
+export function parsePageIdSpec(line) {
+  const t = String(line || "").trim();
+  const split = s => { const i = s.indexOf(" | "); return i < 0 ? [s.trim(), null] : [s.slice(0, i).trim(), s.slice(i + 3).trim()]; };
+  let m;
+  if ((m = t.match(/^meta\s+(.+)$/i)))   { const [arg, rx] = split(m[1]); return { kind: "meta", arg, rx }; }
+  if ((m = t.match(/^jsonld\s+(.+)$/i))) { const [arg, rx] = split(m[1]); return { kind: "jsonld", arg, rx }; }
+  if ((m = t.match(/^css\s+(.+)$/i)))    { const [a, rx] = split(m[1]); const am = a.match(/^(.*?)\s+@([\w:-]+)$/); return { kind: "css", arg: (am ? am[1] : a).trim(), attr: am ? am[2] : null, rx }; }
+  if ((m = t.match(/^html\s+(.+)$/i)))   return { kind: "html", rx: m[1] };
+  return { kind: "html", rx: t };
+}
+
+// doc: a parsed Document; html: its source. -> {value, from} or {value:"", bad:[…], hints:[…]} (hints: snippets around long numbers, to help write a pattern)
+export function extractPageId(doc, html, lines) {
+  const bad = [];
+  const rxOf = src => { try { return new RegExp(src, "i"); } catch { bad.push(src); return null; } };
+  const narrow = (v, rx) => {
+    v = String(v ?? "").trim();
+    if (v && rx) { const r = rxOf(rx), m = r && v.match(r); v = m ? String(m[1] ?? m[0]).trim() : ""; }
+    return v && v.length <= 100 ? v : "";
+  };
+  const jsonFind = (o, key) => {
+    if (Array.isArray(o)) { for (const x of o) { const r = jsonFind(x, key); if (r !== undefined) return r; } return undefined; }
+    if (o && typeof o === "object") {
+      if (key in o && (typeof o[key] === "string" || typeof o[key] === "number")) return o[key];
+      for (const v of Object.values(o)) { const r = jsonFind(v, key); if (r !== undefined) return r; }
+    }
+    return undefined;
+  };
+  for (const line of lines || []) {
+    const sp = parsePageIdSpec(line);
+    let v = "";
+    try {
+      if (sp.kind === "html") { const r = rxOf(sp.rx), m = r && html.match(r); v = m ? narrow(m[1] ?? m[0], null) : ""; }
+      else if (sp.kind === "meta") {
+        const want = sp.arg.toLowerCase();
+        const el = [...doc.querySelectorAll("meta")].find(x => ["name", "property", "itemprop", "http-equiv"].some(a => (x.getAttribute(a) || "").toLowerCase() === want));
+        v = narrow(el && el.getAttribute("content"), sp.rx);
+      } else if (sp.kind === "css") {
+        const el = doc.querySelector(sp.arg);
+        v = narrow(el && (sp.attr ? el.getAttribute(sp.attr) : el.textContent), sp.rx);
+      } else if (sp.kind === "jsonld") {
+        for (const sc of doc.querySelectorAll('script[type="application/ld+json"]')) {
+          let j; try { j = JSON.parse(sc.textContent); } catch { continue; }
+          const f = jsonFind(j, sp.arg);
+          if (f !== undefined && (v = narrow(f, sp.rx))) break;
+        }
+      }
+    } catch { bad.push(line); }
+    if (v) return { value: v, from: line };
+  }
+  const found = [], re = /\d{6,}/g; let m;
+  while ((m = re.exec(html)) && found.length < 60) found.push(html.slice(Math.max(0, m.index - 45), m.index + m[0].length + 12).replace(/\s+/g, " "));
+  const likely = x => /entry|doi|\bid\b|identifier|record|canonical/i.test(x);
+  return { value: "", bad, hints: [...found.filter(likely), ...found.filter(x => !likely(x))].slice(0, 8) };
+}
+// what is stored in the ID property when its value came from the page ({id} in the value pattern = the value read)
+export const pageValueFor = (site, tpl, v) => fillValue(valuePattern(site, tpl), { raw: v, first: v.charAt(0) });
+
 export function robotCheckInPage() {
   const STRONG = [/confirm you are not a robot/, /are you a robot/, /verify (that )?you(?:'| a)re (a )?human/, /verify you are human/, /unusual traffic/, /press (&|and) hold/, /checking your browser/, /just a moment/, /not a robot/, /human verification/];
   const WEAK = [/captcha/, /security check/, /access denied/];

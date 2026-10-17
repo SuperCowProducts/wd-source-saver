@@ -76,7 +76,7 @@ Wikidata labels and aliases are never used – only the page's own ID and the ex
     <label>Name<input id="f_name" placeholder="MathWorld"></label>
     <label>Website item (for P1343 fallback)<input id="f_qid" placeholder="Q12345"></label>
     <label>Default ID property<input id="f_idprop" placeholder="P2812" title="If the website has its own Wikidata property, the ID is saved with it instead of P1343/P2699. Can be overridden per template."></label>
-    <label>Categories (comma-separated)<input id="f_category" list="cats" placeholder="math, geometry"></label>
+    <label>Categories (comma-separated)<input id="f_category" list="cats" placeholder="math, geometry" title="A {a|b} group follows the {x|y} choice of the template that matched the page: with the template …/research-starters/{economics|mathematics}/{id}, the category {ec|mt} means ec under /economics/ and mt under /mathematics/."></label>
   </div>
   <label style="max-width:420px">Languages of this website <span class="hint">– e.g. <code>en</code> or <code>en, it</code>; empty = every language</span>
     <input id="f_language" placeholder="en"></label>
@@ -97,7 +97,7 @@ Wikidata labels and aliases are never used – only the page's own ID and the ex
     <label>URL to save for this page<select id="f_mode">
       <option value="nohash">Page URL without #fragment</option><option value="noquery">Strip ?query and #fragment</option><option value="canonical">&lt;link rel=canonical&gt; if present</option><option value="asis">Exactly as in address bar</option></select></label>
   </div>
-  <label><input type="checkbox" id="f_plurals">Also try plural / singular forms of the term (last word)</label>
+  <label><input type="checkbox" id="f_plurals">Also try plural / singular forms of the term (main noun) – in URLs, in search queries and when reading search results</label>
   <label><input type="checkbox" id="f_archive">Unreliable site: always add the latest Wayback Machine snapshot (P1065 + P2960) and accept pages that only exist in the archive</label>
 
   <details><summary>Use the website's own search engine</summary>
@@ -132,6 +132,9 @@ Wikidata labels and aliases are never used – only the page's own ID and the ex
       <label>Selected text → <code>#:~:text=</code> link<select id="f_textFragment"><option value="">use the global setting</option><option value="on">add it when text is selected</option><option value="off">never</option></select></label>
       <label>If a page redirects (e.g. to its correctly spelled / canonical title)<select id="f_redirects"><option value="">use the global setting</option><option value="accept">accept – save the page it ends on</option><option value="skip">treat as not found</option></select></label>
       <label>ID value pattern (default ID property; empty = <code>{id}</code>)<input id="f_idvalue" placeholder="{first}/{id}"></label>
+      <label style="grid-column:1/-1">ID from the page – for websites whose ID is inside the page, not in the URL (one place per line, first that gives a value wins)
+        <textarea id="f_pageid" rows="4" spellcheck="false" placeholder="meta citation_doi | /(\d+)$&#10;css link[rel=canonical] @href | (\d+)&#10;jsonld identifier&#10;html &quot;entryId&quot;\s*:\s*&quot;?(\d+)"></textarea></label>
+      <label class="chk" style="grid-column:1/-1"><input type="checkbox" id="f_cookies" style="width:auto"> Send my browser's cookies when this website's pages are fetched (logged-in / subscription sites)</label>
       <label>Folder for IDs starting with a digit/symbol (<code>{first}</code>)<input id="f_nonletter" placeholder="0-9"></label>
     </div>
   </details>
@@ -216,7 +219,7 @@ Wikidata labels and aliases are never used – only the page's own ID and the ex
     <button id="hrecent">Show recent</button>
     <button id="hclear">Clear history</button><button id="hclearmiss">Clear “doesn't exist” cache</button>
   </p>
-  <p class="bar"><input id="hforget" placeholder="Q42" style="width:120px"><button id="hforgetbtn">Forget this item</button>
+  <p class="bar"><input id="hforget" placeholder="Q42 / L1234" style="width:120px"><button id="hforgetbtn">Forget this item</button>
   <span class="hint">(use when a statement was removed on Wikidata and should be re-added)</span></p>
   <pre id="hout" hidden></pre>
 </div>

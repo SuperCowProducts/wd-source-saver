@@ -12,7 +12,7 @@ const FIELDS = [
   ["separator", "f_sep", "sepset", "hyphen"], ["caseMode", "f_case", "text", "lower"], ["urlMode", "f_mode", "text", "nohash"],
   ["searchUrl", "f_searchUrl"], ["searchMode", "f_searchMode", "text", "fetch"], ["pickBy", "f_pickBy", "text", "title"],
   ["titleMatch", "f_titleMatch", "text", "equal"], ["approvePartial", "f_approvePartial", "bool"], ["language", "f_language"], ["searchScript", "f_searchScript"], ["searchMax", "f_searchMax"], ["searchRegex", "f_searchRegex"], ["searchExclude", "f_searchExclude"],
-  ["idValue", "f_idvalue"], ["redirects", "f_redirects", "text", ""], ["textFragment", "f_textFragment", "text", ""], ["match", "f_match"], ["notFound", "f_notfound"], ["nonLetter", "f_nonletter"], ["smallWords", "f_small"]
+  ["idValue", "f_idvalue"], ["pageId", "f_pageid", "lines"], ["cookies", "f_cookies", "bool"], ["redirects", "f_redirects", "text", ""], ["textFragment", "f_textFragment", "text", ""], ["match", "f_match"], ["notFound", "f_notfound"], ["nonLetter", "f_nonletter"], ["smallWords", "f_small"]
 ];
 
 const siteLabel = s => {
@@ -378,7 +378,7 @@ $("preview").onclick = async () => {
   const { misses } = await getHist();
   const out = $("tout"); out.hidden = false;
   out.textContent = cands.length
-    ? cands.map(c => `${c.site.name || c.site.qid || c.site.idProperty}${c.prop ? `  →  ${c.prop}: ${c.value}` : "  →  P1343 + P2699"}${c.site.archive ? "  [+ Wayback]" : ""}\n  ${c.url}` +
+    ? cands.map(c => `${c.site.name || c.site.qid || c.site.idProperty}${c.prop ? `  →  ${c.prop}: ${c.fromPage ? "(read from the page)" : c.value}` : "  →  P1343 + P2699"}${c.site.archive ? "  [+ Wayback]" : ""}\n  ${c.url}` +
         (misses[c.url] ? `\n  ⚠ cached as NOT existing since ${new Date(missT(misses[c.url])).toISOString().slice(0, 10)} (${missWhy(misses[c.url])}) – runs skip this URL; “Check if they exist” clears the entry if the page exists` : "")).join("\n")
     : "No URLs: pick a category with templates and enter a plain term (letters/numbers).";
 };
@@ -499,7 +499,7 @@ $("hrecent").onclick = async () => {
 $("hclear").onclick = async () => { if (confirm("Delete the whole history log?")) { await chrome.storage.local.set({ history: { items: {} } }); showStats(); } };
 $("hclearmiss").onclick = async () => { await chrome.storage.local.set({ misses: {} }); showStats(); };
 $("hforgetbtn").onclick = async () => {
-  const q = ($("hforget").value.match(/Q\d+/i) || [""])[0].toUpperCase();
+  const q = ($("hforget").value.match(/Q\d+|L\d+(?:-[FS]\d+)?/i) || [""])[0].toUpperCase();
   if (!q) return;
   const { history } = await getHist(); delete history.items[q];
   await chrome.storage.local.set({ history }); $("hforget").value = ""; showStats();

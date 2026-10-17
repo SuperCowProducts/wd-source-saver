@@ -14,10 +14,26 @@
   footer{position:fixed;bottom:0;left:0;right:0;padding:10px 16px;background:var(--bg);border-top:1px solid var(--border);display:flex;gap:10px;align-items:center}
   button{padding:7px 14px;font:inherit;cursor:pointer;border:1px solid var(--border);border-radius:5px;background:var(--btn);color:var(--fg)}
   button.p{background:var(--prim);border-color:var(--prim);color:#fff} button:disabled{opacity:.5;cursor:not-allowed}
+  .row{flex-direction:column;gap:6px} .row.moved{border-left:4px solid var(--prim)}
+  .main{display:flex;gap:10px;align-items:flex-start;cursor:pointer}
+  .tr{display:flex;gap:6px;align-items:center;margin-left:24px;flex-wrap:wrap;font-size:12px;color:var(--muted)}
+  .tr input,.bulk input{font:inherit;width:130px;padding:3px 6px;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:var(--fg)}
+  .tr input.bad,.bulk input.bad{border-color:#c62828;outline:1px solid #c62828}
+  .tr button,.bulk button{padding:2px 8px;font-size:12px}
+  .bulk{position:sticky;top:0;z-index:2;display:flex;gap:6px;align-items:center;flex-wrap:wrap;padding:8px 16px;background:var(--card);border-bottom:1px solid var(--border);font-size:12px}
+  .lbl{color:var(--muted);max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   a{color:var(--prim)} #msg{color:#c62828;font-size:12px} details{margin-top:12px;color:var(--muted);font-size:12px}
 </style></head>
 <body>
 <header><h1 id="title">Review</h1><div class="t" id="sub"></div></header>
+<div class="bulk" id="bulk">
+  <span>Send to another item / lexeme:</span>
+  <input id="bt" list="targets" placeholder="Q123 or L123" autocomplete="off" spellcheck="false"><span class="lbl" id="bl"></span>
+  <button id="bticked" title="Set this target on every ticked row">ticked rows</button>
+  <button id="ball" title="Set this target on every row">all rows</button>
+  <button id="breset" title="Send every row back to the main item">reset all</button>
+</div>
+<datalist id="targets"></datalist>
 <main><div id="rows"></div><details id="pres"><summary></summary><div id="presl"></div></details></main>
 <footer><button class="p" id="ok">Save</button><button id="cancel">Cancel</button><span id="msg"></span></footer>
 <script src="review.js"></script>

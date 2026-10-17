@@ -1,6 +1,6 @@
 import {
   normUrl, findCurrent, buildCandidates, dedupeIds, parseClipboard, checkUrl, unwrapArchive, waybackLatest,
-  tsToDate, cleanTerm, alignToTerms, cats, sharesCat, usable, searchUrl, extractLinks, pickResultsDetailed, parseSearchScript, pageOp, langsOf, termsForSite, KINDS, resolveArchiveUrl, redirectProblem, robotCheckInPage, looksLikeRobotCheckHtml, textFragmentFor,
+  tsToDate, cleanTerm, alignToTerms, segmentWords, cats, catsFor, sharesCat, usable, scraperFor, pageIdPatterns, pageHtmlInPage, pageValueFor, wordVariants, searchUrl, extractLinks, pickResultsDetailed, parseSearchScript, pageOp, langsOf, termsForSite, KINDS, resolveArchiveUrl, redirectProblem, robotCheckInPage, looksLikeRobotCheckHtml, textFragmentFor,
   parseSiteClipboard, pathTemplate, formatterTemplate, usableValues,
   matchTemplates, keyFor, applyUrlMode, propForUrl, siteDefaultProp,
   DEFAULTS
@@ -111,7 +111,7 @@ function startIndicators() {
 function endRun() {
   clearInterval(current?.dotTimer); clearInterval(current?.keep);
   current = null;
-  chrome.action.setTitle({ title: "Save this page as a source on the Wikidata item in your clipboard" });
+  chrome.action.setTitle({ title: "Save this page as a source on the Wikidata item or lexeme in your clipboard" });
   persistStatus();
 }
 function stopRun() {
@@ -255,6 +255,16 @@ const archQuals = a => ({
   [P_ARCHDATE]: [snak(P_ARCHDATE, "time", timeValue(a.date))]
 });
 
+// What identifies one source under a P1343 statement: normally a URL (P2699); for a YouTube video the video ID (P1651).
+// Both kinds may sit in the SAME statement (a website with its own content may also have a YouTube presence).
+const SRC_QUALS = [P_URL, "P1651"];
+const srcQual = e => e.idQual ? { prop: e.idQual.prop, value: e.idQual.value, same: (a, b) => a === b }
+                              : { prop: P_URL, value: e.url, same: (a, b) => normUrl(a) === normUrl(b) };
+const srcKey = e => { const q = srcQual(e); return q.prop + "|" + (q.prop === P_URL ? normUrl(q.value) : q.value); };
+const holdsSrc = (c, e) => { const q = srcQual(e); return (c.qualifiers?.[q.prop] || []).some(x => q.same(x.datavalue?.value, q.value)); };
+const srcCount = c => SRC_QUALS.reduce((n, p) => n + (c.qualifiers?.[p] || []).length, 0);
+const hasSrcQual = c => srcCount(c) > 0;
+
 function newClaim(e) {
   if (e.property) {
     const c = { type: "statement", rank: "normal", mainsnak: snak(e.property, "string", e.value) };
@@ -264,7 +274,7 @@ function newClaim(e) {
   return {
     type: "statement", rank: "normal",
     mainsnak: snak(P_SOURCE, "wikibase-entityid", { "entity-type": "item", id: e.site.qid.toUpperCase() }),
-    qualifiers: { [P_URL]: [snak(P_URL, "string", e.url)], ...(e.archive ? archQuals(e.archive) : {}) }
+    qualifiers: { [srcQual(e).prop]: [snak(srcQual(e).prop, "string", srcQual(e).value)], ...(e.archive ? archQuals(e.archive) : {}) }
   };
 }
 function addQual(c, prop, sn, append = false) {
@@ -274,8 +284,8 @@ function addQual(c, prop, sn, append = false) {
 }
 function modifyClaim(c, e, status) {
   if (status === "qualifier-added") {
-    const have = (c.qualifiers?.[P_URL] || []).some(x => normUrl(x.datavalue?.value) === normUrl(e.url));
-    if (!have) addQual(c, P_URL, snak(P_URL, "string", e.url), true);   // several URLs share one P1343 statement
+    const q = srcQual(e);
+    if (!holdsSrc(c, e)) addQual(c, q.prop, snak(q.prop, "string", q.value), true);   // several URLs / video IDs share one P1343 statement
   }
   if (e.archive && !hasQual(c, P_ARCH)) {
     addQual(c, P_ARCH, snak(P_ARCH, "string", e.archive.url));
@@ -283,12 +293,14 @@ function modifyClaim(c, e, status) {
   }
 }
 
-// one new P1343 statement carrying several P2699 URLs
+// one new P1343 statement carrying several P2699 URLs and/or P1651 video IDs
 function newGroupClaim(entries) {
+  const qualifiers = {};
+  for (const e of entries) { const q = srcQual(e); (qualifiers[q.prop] = qualifiers[q.prop] || []).push(snak(q.prop, "string", q.value)); }
   return {
     type: "statement", rank: "normal",
     mainsnak: snak(P_SOURCE, "wikibase-entityid", { "entity-type": "item", id: entries[0].site.qid.toUpperCase() }),
-    qualifiers: { [P_URL]: entries.map(e => snak(P_URL, "string", e.url)) }
+    qualifiers
   };
 }
 
@@ -317,23 +329,24 @@ export async function planSources(item, entries, signal) {
     }
     const q = entry.site.qid.toUpperCase();
     const same = claimsBy[P_SOURCE].filter(c => c.mainsnak?.datavalue?.value?.id === q);
-    const urlMatch = same.find(c => (c.qualifiers?.[P_URL] || []).some(x => normUrl(x.datavalue?.value) === normUrl(entry.url)));
-    if (urlMatch) {
-      // an archive link can only be attached to a statement that holds exactly this one URL (otherwise the pairing is lost)
-      if (entry.archive && !hasQual(urlMatch, P_ARCH) && (urlMatch.qualifiers?.[P_URL] || []).length === 1 && !archDone.has(urlMatch.id)) {
-        archDone.add(urlMatch.id); return out("archive-added", urlMatch);
+    const match = same.find(c => holdsSrc(c, entry));
+    if (match) {
+      // an archive link can only be attached to a statement that holds exactly this one URL / video ID (otherwise the pairing is lost)
+      if (entry.archive && !hasQual(match, P_ARCH) && srcCount(match) === 1 && !archDone.has(match.id)) {
+        archDone.add(match.id); return out("archive-added", match);
       }
-      return out("exists", urlMatch);
+      return out("exists", match);
     }
-    if (planned.some(p => p.q === q && normUrl(p.url) === normUrl(entry.url))) return out("exists");
-    planned.push({ q, url: entry.url });
+    const key = srcKey(entry);
+    if (planned.some(p => p.q === q && p.key === key)) return out("exists");
+    planned.push({ q, key });
 
-    if (entry.archive) {                       // URL + its own archive link: keep them together in their own statement
-      const bare = same.find(c => !hasQual(c, P_URL) && !hasQual(c, P_ARCH) && !usedBare.has(c.id));
+    if (entry.archive) {                       // source + its own archive link: keep them together in their own statement
+      const bare = same.find(c => !hasSrcQual(c) && !hasQual(c, P_ARCH) && !usedBare.has(c.id));
       if (bare) { usedBare.add(bare.id); return out("qualifier-added", bare); }
       return out("created");
     }
-    // plain URL: put it under the website's existing P1343 statement, or under ONE new statement shared by all new URLs
+    // plain URL / video ID: put it under the item's existing P1343 statement for this source, or under ONE new statement shared by all new ones
     const target = same.find(c => !hasQual(c, P_ARCH));
     if (target) return out("qualifier-added", target);
     let g = groups.get(q);
@@ -412,13 +425,78 @@ async function commit(item, plan, chosen, s, signal) {
   await chrome.storage.local.set({ lastEdit: t, editTimes: [...recent, t] });
 }
 
+// A URL typed into the review window. -> {url, prop, value} or {why}
+function parseEditedUrl(e, text) {
+  let u;
+  try { u = new URL(String(text).trim()); } catch { return { why: "not a valid web address" }; }
+  if (!/^https?:$/.test(u.protocol)) return { why: "only http(s) addresses" };
+  const url = u.toString();
+  if (e.idQual) {                                        // YouTube: the saved ID comes from the address (…?v=ID)
+    const sc = scraperFor(url), id = sc?.qualProp === e.idQual.prop ? sc.idFromUrl(u) : "";
+    return id ? { url, prop: "", value: "", idQual: { prop: e.idQual.prop, value: id } } : { why: `can't read the ${e.idQual.prop} video ID from this address` };
+  }
+  if (!e.property) return { url, prop: "", value: "" };
+  if (pageIdPatterns(e.site).length) return matchTemplates(e.site, url) ? { url, prop: e.property, value: "", fromPage: true }     // the ID is read from that page when saving
+    : { why: "the address matches none of the website's templates" };
+  const r = propForUrl(e.site, url);                     // an ID row: the ID is re-read from the new address
+  return r.value ? { url, prop: r.prop, value: r.value } : { why: "can't read the ID from this address (it matches none of the website's templates)" };
+}
+// The entry for an edited row: new URL, ID re-read from it, and the Wayback link looked up again for the new address
+async function editedEntry(p, text, signal) {
+  const e = p.entry, r = parseEditedUrl(e, text);
+  if (!r.url) return null;
+  if (r.fromPage) {                                                    // read the ID from the page at the edited address
+    const f = await fetchPageId(e.site, r.url, signal).catch(err => { if (signal?.aborted) throw err; return { value: "", why: err.message }; });
+    if (!f.value) return null;
+    r.value = pageValueFor(e.site, matchTemplates(e.site, r.url)?.template, f.value);
+  }
+  let archive = null;
+  if (e.site.archive) { const a = await lookupArchive(r.url, signal); if (a.found) archive = a; }
+  return makeEntry(e.site, r.url, r.value, archive, r.prop || undefined, { viaSearch: e.viaSearch, edited: true, ...(r.idQual ? { idQual: r.idQual } : {}) });
+}
+
+// "q99" / "L5-f1" / a wikidata.org URL -> "Q99" / "L5-F1"; null when it is none of those
+const normEntity = v => {
+  const m = String(v || "").trim().match(/^(?:https?:\/\/(?:www\.|m\.)?wikidata\.org\/(?:wiki|entity)\/)?(?:Lexeme:)?(?:(Q\d+)|(L\d+)(?:[-#]([FS]\d+))?)\/?$/i);
+  return m ? (m[1] || m[2] + (m[3] ? "-" + m[3] : "")).toUpperCase() : null;
+};
+
+// Items with property = value, e.g. P11245 = "NASA". The value may be stored with or without "@" and in another case, so a few spellings are tried.
+async function itemsByStatement(prop, value, signal) {
+  const bare = String(value).replace(/^@/, "");
+  const tried = [...new Set([bare, "@" + bare, bare.toLowerCase(), "@" + bare.toLowerCase()])];
+  for (const v of tried) {
+    const d = await api({ action: "query", list: "search", srsearch: `haswbstatement:${prop}=${v}`, srnamespace: 0, srlimit: 5 }, false, signal);
+    const items = (d.query?.search || []).map(x => x.title).filter(t => /^Q\d+$/.test(t));
+    if (items.length) return { items, tried: tried.slice(0, tried.indexOf(v) + 1) };
+  }
+  return { items: [], tried };
+}
+
+// Q123 -> its English label; L123 -> its lemma(s); forms/senses -> their lexeme's lemma. "" when unknown.
+const labelCache = new Map();
+async function entityLabel(id) {
+  id = String(id || "").toUpperCase();
+  const m = id.match(/^(Q\d+|L\d+)(?:-[FS]\d+)?$/);
+  if (!m) return "";
+  const base = m[1];
+  if (labelCache.has(base)) return labelCache.get(base);
+  const isQ = base[0] === "Q";
+  const d = await api({ action: "wbgetentities", ids: base, ...(isQ ? { props: "labels", languages: "en", languagefallback: "1" } : {}) }, false, new AbortController().signal);
+  const e = d.entities?.[base];
+  const out = isQ ? (e?.labels?.en?.value || Object.values(e?.labels || {})[0]?.value || "")
+                  : Object.values(e?.lemmas || {}).map(l => l.value).join(" / ");
+  labelCache.set(base, out);
+  return out;
+}
+
 // ======================================================================
 // human review window
 // ======================================================================
-function askReview(payload, page = "review.html", size = [780, 700]) {
+function askReview(payload, page = "review.html", size = [780, 700], ctx = null) {
   return new Promise(async resolve => {
     const id = crypto.randomUUID();
-    const rec = { payload, resolve };
+    const rec = { payload, resolve, ctx };
     reviews.set(id, rec);
     const timer = setTimeout(() => { if (reviews.delete(id)) { resolve(null); if (rec.winId) chrome.windows.remove(rec.winId).catch(() => {}); } }, 15 * 60e3);
     rec.resolve = v => { clearTimeout(timer); resolve(v); };
@@ -436,8 +514,17 @@ chrome.runtime.onMessage.addListener((msg, _sender, send) => {
   if (msg?.type === "review-get") { send(reviews.get(msg.id)?.payload || null); return; }
   if (msg?.type === "review-done") {
     const r = reviews.get(msg.id);
-    if (r) { reviews.delete(msg.id); r.resolve(msg.cancel ? null : msg.selected || []); if (r.winId) chrome.windows.remove(r.winId).catch(() => {}); }
+    // the review window also sends {selected, targets}: which rows, and which item/lexeme each one goes to
+    if (r) { reviews.delete(msg.id); r.resolve(msg.cancel ? null : msg.targets ? { selected: msg.selected || [], targets: msg.targets, urls: msg.urls || {} } : msg.selected || []); if (r.winId) chrome.windows.remove(r.winId).catch(() => {}); }
     return;
+  }
+  if (msg?.type === "check-url") {                       // review window: is the URL typed into a row usable? (and what ID does it hold?)
+    send(reviews.get(msg.id)?.ctx?.check?.(msg.row, msg.url) || { ok: false, why: "this review is no longer active" });
+    return;
+  }
+  if (msg?.type === "entity-label") {                    // review window: a short name for a typed target, so a typo is easy to spot
+    entityLabel(msg.id).then(send, () => send(""));
+    return true;
   }
   if (msg?.type === "stop") { stopRun(); return; }
 });
@@ -468,13 +555,31 @@ function notify(outcome) {
 // ======================================================================
 // discovery helpers
 // ======================================================================
-async function readClipboard() {
+async function ensureOffscreen() {
   if (!(await chrome.offscreen.hasDocument())) {
     await chrome.offscreen.createDocument({
-      url: "offscreen.html", reasons: ["CLIPBOARD"], justification: "Read the Wikidata item ID from the clipboard"
+      url: "offscreen.html", reasons: ["CLIPBOARD", "DOM_PARSER"], justification: "Read the Wikidata item ID from the clipboard; read IDs out of page HTML"
     });
   }
+}
+async function readClipboard() {
+  await ensureOffscreen();
   return chrome.runtime.sendMessage({ target: "offscreen", type: "read-clipboard" });
+}
+// ID of a website that only shows it inside the page: html -> {value, from} | {value:"", bad, hints}
+async function readPageId(html, specs) {
+  await ensureOffscreen();
+  return (await chrome.runtime.sendMessage({ target: "offscreen", type: "page-id", html, specs })) || { value: "" };
+}
+// fetch a page (cookies sent when the website is set to) and read its ID: -> {value, url, why}
+async function fetchPageId(site, url, signal) {
+  if (!(await hasPerm(new URL(url).hostname))) return { value: "", why: "no permission – open settings and press Save" };
+  const res = await hostFetch(url, { credentials: site.cookies ? "include" : "omit", timeoutMs: 15000, signal });
+  if (!res.ok) return { value: "", why: `HTTP ${res.status}` };
+  const html = (await res.text()).slice(0, 6e6);
+  const got = await readPageId(html, pageIdPatterns(site));
+  if (!got.value) dlog("WARN", `no "ID from the page" pattern matched ${url}`, { invalid: got.bad, longNumbersOnThePage: got.hints }, 3000);
+  return { value: got.value || "", url: res.url || url, why: got.value ? "" : "none of the “ID from the page” patterns matched" };
 }
 
 async function pageUrl(tab, site, href, wrapped) {
@@ -510,7 +615,7 @@ async function lookupArchive(url, signal) {
 
 async function checkWithPermission(c, s, signal) {
   if (!(await hasPerm(new URL(c.url).hostname))) return { found: false, reason: "no permission – open settings and press Save" };
-  return checkUrl(c.url, c.site, s, hostFetch, signal);
+  return checkUrl(c.url, c.site, s, hostFetch, signal, !!c.fromPage);
 }
 
 async function resolveCandidate(c, s, signal) {
@@ -518,7 +623,15 @@ async function resolveCandidate(c, s, signal) {
   // the archive is looked up for the address the live site ended on (its spelling is the right one)
   const arch = c.site.archive ? await lookupArchive(live.found ? live.url : c.url, signal) : null;
   const archive = arch?.found ? arch : null;
-  if (live.found) return { found: true, url: live.url, archive };
+  if (live.found) {
+    let value;
+    if (c.fromPage) {                                                  // the ID value is inside the page: read it from the page that was just fetched
+      const got = await readPageId(live.html || "", pageIdPatterns(c.site));
+      if (got.value) value = pageValueFor(c.site, c.template, got.value);
+      else dlog("WARN", `no "ID from the page" pattern matched ${live.url}`, { invalid: got.bad, longNumbersOnThePage: got.hints }, 3000);
+    }
+    return { found: true, url: live.url, archive, ...(c.fromPage ? { value, pageIdMissing: !value } : {}) };
+  }
   if (archive) {
     // live site unreachable: the archived capture knows the correct spelling (…/Harmonic_Number -> …/Harmonic_number)
     const fixed = archive.original && archive.original !== c.url && !redirectProblem(c.site, c.url, archive.original) ? archive.original : c.url;
@@ -735,7 +848,7 @@ const whyNot = (site, prop) => prop
 const entryKey = e => keyFor(e.site, e.url, e.value, e.property);
 
 function describe(e) {
-  const main = e.property ? `${e.label} (${e.property}: ${e.value})` : `${e.label} – ${e.url}`;
+  const main = e.property ? `${e.label} (${e.property}: ${e.value})` : `${e.label} – ${e.url}${e.idQual ? ` (${e.idQual.prop}: ${e.idQual.value})` : ""}`;
   return main + (e.archive ? ` + archive ${e.archive.date}` : e.archiveWanted ? " (no Wayback snapshot found)" : "") +
     (e.viaArchive ? " [live site unreachable]" : "") + (e.viaSearch ? " [from site search]" : "") + (e.needsApproval ? " [partial title match – needs approval]" : "");
 }
@@ -814,17 +927,18 @@ async function runInner(tab, only, s, signal, configure = false) {
     throw new RunError(`No Wikidata item configured for ${host}. Opened settings so you can add it.`, "config");
   }
   const site = cur.site;
+  const curCats = catsFor(site, cur.extracted);                         // categories of THIS page (a {a|b} group follows the URL's choice)
   let url = await pageUrl(tab, site, href, !!un);
   dlog("INFO", `page ${tab.url}${un ? " (web.archive.org snapshot of " + href + ")" : ""}`);
-  dlog("INFO", `matched website "${labelOf(site)}"`, { qid: site.qid, idProperty: site.idProperty, categories: cats(site), separator: site.separator, caseMode: site.caseMode, archive: !!site.archive });
-  dlog("INFO", "ID read from the URL", cur.extracted ? { template: cur.extracted.template, raw: cur.extracted.raw, words: cur.extracted.words, sep: cur.extracted.sep, prop: cur.extracted.prop } : "(page doesn't match a template)");
+  dlog("INFO", `matched website "${labelOf(site)}"`, { qid: site.qid, idProperty: site.idProperty, categories: catsFor(site, cur.extracted), separator: site.separator, caseMode: site.caseMode, archive: !!site.archive });
+  dlog("INFO", "ID read from the URL", cur.extracted ? { template: cur.extracted.template, raw: cur.extracted.raw, words: cur.extracted.words, sep: cur.extracted.sep, prop: cur.extracted.prop, choices: cur.extracted.choices } : "(page doesn't match a template)");
   const frag = await selectionFragment(tab, site, s);
   if (frag) { url = url.split("#")[0] + frag; dlog("INFO", "the text you selected is added as a text fragment", frag); }
   dlog("INFO", `URL that will be saved: ${url}`);
 
   setStage("reading clipboard…");
   const parsed = parseClipboard((await readClipboard()) || "");
-  if (!parsed) throw new RunError("The clipboard must start with a Wikidata item – Q123 or a wikidata.org/wiki/Q123 URL – optionally followed by extra terms (Q123, en: some term, it: un termine).", "clipboard");
+  if (!parsed) throw new RunError("The clipboard must start with a Wikidata item or lexeme – Q123, L123 (form L123-F1, sense L123-S1) or a wikidata.org URL – optionally followed by extra terms (Q123, en: some term, it: un termine).", "clipboard");
   const item = parsed.item;
   current.item = item;
   dlog("INFO", "clipboard", { item, extras: parsed.extras.map(e => e.text) });
@@ -841,7 +955,15 @@ async function runInner(tab, only, s, signal, configure = false) {
   if (cur.extracted) {
     const ambiguous = cur.extracted.sep === "none";                    // run-together ID: only your extras can say where the words split
     pageWords = (ambiguous && alignToTerms(cur.extracted, termsForSite(extras, site))) || cur.extracted.words;
+    // still one lump (e.g. investopedia …/incomestatement.asp)? try splitting it with the English word list,
+    // but only for English sites and only when your extras did not already say where the words split
+    if (ambiguous && pageWords.length === 1 && (!pageLang || pageLang === "en")) {
+      const seg = segmentWords(pageWords[0]);
+      if (seg) { dlog("INFO", "split run-together ID with the word list", `${pageWords[0]} -> ${seg.join(" ")}`); pageWords = seg; }
+    }
   }
+  const scraper = !un ? scraperFor(href) : null;                       // YouTube video page: the video ID is not a word
+  if (scraper?.noTerms) pageWords = null;
   const pageTerm = pageWords ? { text: pageWords.join(" "), words: pageWords, lang: pageLang } : null;
   const searchTerms = [pageTerm, ...extras].filter(Boolean);
   const ids = dedupeIds(searchTerms.map(t => ({ words: t.words, lang: t.lang })));
@@ -858,15 +980,60 @@ async function runInner(tab, only, s, signal, configure = false) {
   const entries = [], skipped = [], knownLines = [];
   if (fileState && !fileState.ok) skipped.push({ label: "Website data file", url: "", reason: fileState.msg });
   const firstProp = cur.extracted ? cur.extracted.prop : (siteDefaultProp(site) === "P1343" ? "" : siteDefaultProp(site));
-  const first = makeEntry(site, url, cur.extracted?.value, archive, firstProp);
-  if (!first) skipped.push({ label: labelOf(site), url: href, reason: whyNot(site, firstProp) });
+  // YouTube video page: the source is the CHANNEL's item (the one whose YouTube handle, P11245, is the handle embedded in the page),
+  // saved as P1343 + P2699 (the URL holds the video ID). Not found -> the page is saved the way the website is configured.
+  let entrySite = site, entryProp = firstProp, entryValue = cur.extracted?.value, entryExtra = {};
+  if (scraper) {
+    setStage(`reading the page for the ${scraper.name}…`);
+    let got = null;
+    try { const [r] = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: scraper.func }); got = r?.result; } catch (e) { dlog("WARN", `page scrape failed: ${e.message}`); }
+    if (!got?.value) skipped.push({ label: scraper.name, url: href, reason: "not found on the page (let the video page finish loading and try again) – saved as the website is configured" });
+    else {
+      setStage(`looking for the Wikidata item with ${scraper.prop} = ${got.value}…`);
+      const found = await itemsByStatement(scraper.prop, got.value, signal);
+      dlog("INFO", `${scraper.name}: ${got.value} (${got.from})`, { searched: found.tried, items: found.items });
+      if (found.items.length === 1) {
+        const lbl = await entityLabel(found.items[0]).catch(() => "");
+        entrySite = { ...site, qid: found.items[0], name: lbl ? `${lbl} (${labelOf(site)})` : labelOf(site) };
+        entryProp = ""; entryValue = undefined;
+        let vid = ""; try { vid = scraper.idFromUrl(new URL(href)); } catch { /* keep empty */ }
+        if (vid) entryExtra = { idQual: { prop: scraper.qualProp, value: vid } };
+        dlog("INFO", `source item: ${found.items[0]}${lbl ? " " + lbl : ""} (${scraper.prop} = ${got.value}); the video is saved as P1343 + ${vid ? scraper.qualProp + " " + vid : "P2699 (no video ID in the URL)"}`);
+      } else skipped.push({ label: scraper.name, url: href, reason: (found.items.length
+        ? `${found.items.length} items have ${scraper.prop} = ${got.value} (${found.items.join(", ")})`
+        : `no Wikidata item has ${scraper.prop} = ${got.value}`) + " – saved as the website is configured" });
+    }
+  }
+  // ID that only the PAGE carries (OED: …/dictionary/automobile_adj, entry ID 8269459060 inside the page): read it with the website's "ID from the page" patterns
+  let pageIdFailed = false;
+  const idPats = pageIdPatterns(site);
+  if (entryProp && entrySite === site && idPats.length) {
+    entryValue = undefined;                                           // never the slug from the URL
+    if (un) { pageIdFailed = true; skipped.push({ label: labelOf(site), url: href, reason: `the ${entryProp} value is read from the live page, but this is a web.archive.org snapshot – open the live page and try again` }); }
+    else {
+      setStage(`reading the ${entryProp} value from the page…`);
+      let got = null;
+      try {
+        const [r] = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: pageHtmlInPage });
+        got = await readPageId(r?.result || "", idPats);
+      } catch (e) { dlog("WARN", `page ID read failed: ${e.message}`); }
+      if (got?.value) { entryValue = pageValueFor(site, cur.extracted?.template, got.value); dlog("INFO", `${entryProp} value read from the page: ${got.value} (${got.from})${entryValue !== got.value ? " -> " + entryValue : ""}`); }
+      else {
+        pageIdFailed = true;
+        dlog("WARN", `no \"ID from the page\" pattern matched`, { patterns: idPats, invalid: got?.bad, longNumbersOnThePage: got?.hints }, 3000);
+        skipped.push({ label: labelOf(site), url: href, reason: `the ${entryProp} value wasn't found on the page (none of the website's “ID from the page” lines matched – let the page finish loading, or check them; the debug log lists long numbers found on the page)` });
+      }
+    }
+  }
+  const first = makeEntry(entrySite, url, entryValue, archive, entryProp, entryExtra);
+  if (!first) { if (!pageIdFailed) skipped.push({ label: labelOf(site), url: href, reason: whyNot(site, firstProp) }); }
   else if (isKnown(entryKey(first), first.archiveWanted)) knownLines.push(describe(first));
   else entries.push(first);
 
   // --- related websites ---
-  if (!only && s.related && cats(site).length) {
+  if (!only && s.related && curCats.length) {
     const seen = new Set([normUrl(href), normUrl(url)]);
-    const cands = buildCandidates(sites, site, ids, { perSite: s.maxPerSite, total: s.maxTotal }).filter(c => {
+    const cands = buildCandidates(sites, site, ids, { perSite: s.maxPerSite, total: s.maxTotal, curCats }).filter(c => {
       if (seen.has(normUrl(c.url))) return false;
       if (isKnown(keyFor(c.site, c.url, c.value, c.prop), !!c.site.archive)) { knownLines.push(`${labelOf(c.site)} – ${c.url}`); return false; }
       if (misses[c.url]) {
@@ -878,9 +1045,18 @@ async function runInner(tab, only, s, signal, configure = false) {
       return true;
     });
     dlog("INFO", `${cands.length} URL guesses (after skipping the current page, history and cached misses)`, cands.map(c => `${c.site.name || c.site.qid}${c.prop ? " [" + c.prop + "]" : ""} ${c.url}`), 6000);
-    const searchSites = sites.filter(x => usable(x) && x.searchUrl && sharesCat(site, x));
+    const searchSites = sites.filter(x => usable(x) && x.searchUrl && sharesCat(curCats, x));
     // at most two queries per website, from the terms in that website's language(s)
-    const queriesFor = x => [...new Map(termsForSite(searchTerms, x).map(t => [t.text.toLowerCase(), t])).values()].slice(0, 2);
+    // (a website with "plural / singular forms" ticked also gets the other number of the main noun: "financial statements" -> + "financial statement")
+    const queriesFor = x => {
+      const base = [...new Map(termsForSite(searchTerms, x).map(t => [t.text.toLowerCase(), t])).values()].slice(0, 2);
+      if (!x.plurals) return base;
+      const out = new Map();
+      for (const t of base) for (const w of wordVariants(t.words).slice(0, 2)) {
+        const text = w.join(" "); if (!out.has(text.toLowerCase())) out.set(text.toLowerCase(), { ...t, text, words: w });
+      }
+      return [...out.values()].slice(0, 4);
+    };
     const tasks = [
       ...cands.map(c => ({ kind: "check", c })),
       ...searchSites.flatMap(x => queriesFor(x).map(q => ({ kind: "search", x, q })))
@@ -895,6 +1071,10 @@ async function runInner(tab, only, s, signal, configure = false) {
         if (m) cc = { ...c, prop: m.prop, value: m.value };
         else if (c.prop) return skipped.push({ label: labelOf(c.site), url: r.url, reason: `corrected to ${r.url}, which matches no template – can't read the ${c.prop} value from it` });
         dlog("CHECK", `${c.url} was corrected to ${r.url}`, cc.value !== c.value ? { value: `${c.value} -> ${cc.value}` } : undefined);
+      }
+      if (cc.prop && pageIdPatterns(cc.site).length) {                 // ID lives in the page: never the slug of the URL
+        cc = { ...cc, value: r.value || undefined };
+        if (!cc.value) return skipped.push({ label: labelOf(c.site), url: r.url, reason: r.viaArchive ? `the ${cc.prop} value is read from the live page, which couldn't be reached` : `the page exists but its ${cc.prop} value wasn't found on it (check the website's “ID from the page” lines; a login may be needed – tick “send my cookies”)` });
       }
       const e = makeEntry(cc.site, r.url, cc.value, r.archive, cc.prop, { viaArchive: r.viaArchive, ...extra });
       if (!e) return skipped.push({ label: labelOf(c.site), url: r.url, reason: whyNot(c.site, cc.prop) });
@@ -929,12 +1109,18 @@ async function runInner(tab, only, s, signal, configure = false) {
           dlog("SRCH", `kept ${picks.length}`, picks);
           if (!picks.length) skipped.push({ label: labelOf(t.x), url: sUrl, reason: "search found no matching result" });
           for (const { url: pu, exact } of picks) {
-            const { prop, value } = propForUrl(t.x, pu);
+            let { prop, value } = propForUrl(t.x, pu);
             const c = { site: t.x, url: applyUrlMode(pu, t.x.urlMode), value, prop };
+            let pv = "";
+            if (prop && !value && pageIdPatterns(t.x).length) {          // ID inside the page: open the result and read it
+              const f = await fetchPageId(t.x, c.url, signal).catch(e => { if (signal.aborted) throw e; return { value: "", why: e.message === "blocked" ? "host rate-limited/blocking" : e.message }; });
+              if (f.value) { pv = pageValueFor(t.x, matchTemplates(t.x, c.url)?.template, f.value); value = pv; c.value = pv; }
+              else { skipped.push({ label: labelOf(t.x), url: pu, reason: `couldn't read the ${prop} value from this search result's page: ${f.why}` }); continue; }
+            }
             if (prop && !value) { skipped.push({ label: labelOf(t.x), url: pu, reason: "can't read the ID from this search result – add a template for it" }); continue; }
             let archiveRes = null;
             if (t.x.archive) { const a = await lookupArchive(c.url, signal); if (a.found) archiveRes = a; }
-            addFound(c, { url: c.url, archive: archiveRes }, { viaSearch: true, needsApproval: !!t.x.approvePartial && !exact });
+            addFound(c, { url: c.url, archive: archiveRes, value: pv }, { viaSearch: true, needsApproval: !!t.x.approvePartial && !exact });
           }
         }
       } finally { done++; if (current) setStage(current.stage, done, tasks.length); }
@@ -954,6 +1140,8 @@ async function runInner(tab, only, s, signal, configure = false) {
 
   // --- review (a human decides when there is more than a little, or anything came from a search) ---
   let chosen = fresh, cancelled = false;
+  const edits = new Map();                                             // plan id -> URL typed over the found one in the review window
+  const targets = new Map();                                           // plan id -> item/lexeme chosen in the review window (default: the main one)
   // partial title matches (site option "approve partial matches") ALWAYS need a human decision, whatever the review setting
   const needReview = fresh.length && (fresh.some(p => p.entry.needsApproval) || s.review === "always" ||
     (s.review === "auto" && (fresh.length > s.reviewThreshold || fresh.some(p => p.entry.viaSearch))));
@@ -962,40 +1150,107 @@ async function runInner(tab, only, s, signal, configure = false) {
     const sel = await askReview({
       item, itemLabel: "", maxPerEdit: s.maxPerEdit,
       rows: fresh.map(p => ({ id: p.id, label: p.entry.label, text: p.entry.property ? `${p.entry.property}: ${p.entry.value}` : p.entry.url,
-        gkey: stmtKey(p), archive: p.entry.archive?.date || null, archiveUrl: p.entry.archive?.url || null, url: p.entry.url, viaSearch: !!p.entry.viaSearch, needsApproval: !!p.entry.needsApproval, viaArchive: !!p.entry.viaArchive,
+        gkey: stmtKey(p), siteq: p.entry.property ? "" : (p.entry.site.qid || ""), archive: p.entry.archive?.date || null, archiveUrl: p.entry.archive?.url || null, url: p.entry.url, viaSearch: !!p.entry.viaSearch, needsApproval: !!p.entry.needsApproval, viaArchive: !!p.entry.viaArchive,
         note: p.status === "archive-added" ? "adds the archive URL to an existing statement"
           : p.status === "qualifier-added" ? "adds the URL to the existing P1343 statement"
           : p.group && !p.lead ? "added under the same new P1343 statement" : "new statement" })),
-      present: present.map(p => describe(p.entry)), skipped: skipped.length
+      present: present.map(p => describe(p.entry)), skipped: skipped.length,
+      // items/lexemes you have saved to before, most recent first: offered as quick targets in the window
+      known: Object.entries(history.items).filter(([q]) => q !== item)
+        .map(([q, o]) => [q, Math.max(0, ...Object.values(o).map(x => x.t || 0))]).sort((a, c) => c[1] - a[1]).slice(0, 25).map(x => x[0])
+    }, "review.html", [780, 700], {
+      check: (row, url) => {
+        const p = fresh.find(x => x.id === Number(row));
+        if (!p) return { ok: false, why: "unknown row" };
+        const r = parseEditedUrl(p.entry, url);
+        if (!r.url) return { ok: false, why: r.why };
+        const host = u => { try { return new URL(u).hostname.replace(/^www\./, "").toLowerCase(); } catch { return ""; } };
+        return { ok: true, url: r.url, text: r.fromPage ? `${r.prop}: (read from the page when you save)` : r.value ? `${r.prop}: ${r.value}` : r.idQual ? `${r.idQual.prop}: ${r.idQual.value}` : "",
+          warn: host(r.url) !== host(p.entry.url) ? "different website than before" : "",
+          archive: !!p.entry.site.archive };
+      }
     });
     signal.throwIfAborted();
     dlog("REVIEW", sel === null ? "cancelled / closed" : `approved ${sel.length} of ${fresh.length}`, sel);
     if (sel === null) cancelled = true;
-    else chosen = fresh.filter(p => sel.includes(p.id));
+    else {
+      const ids = Array.isArray(sel) ? sel : sel.selected;
+      for (const [k, v] of Object.entries(Array.isArray(sel) ? {} : sel.targets || {})) {   // row -> item/lexeme it was sent to
+        const t = normEntity(v);
+        if (t && t !== item) targets.set(Number(k), t);
+      }
+      chosen = fresh.filter(p => ids.includes(p.id));
+      for (const [k, v] of Object.entries(Array.isArray(sel) ? {} : sel.urls || {})) edits.set(Number(k), String(v));
+    }
+  }
+  // rows sent to another item/lexeme are compared with THAT entity and saved there, one edit per target
+  const targetOf = p => targets.get(p.id) || item;
+  const movedBy = new Map();
+  for (const p of chosen) if (targetOf(p) !== item) { const T = targetOf(p); if (!movedBy.has(T)) movedBy.set(T, []); movedBy.get(T).push(p); }
+  chosen = chosen.filter(p => targetOf(p) === item);
+  // rows whose URL was edited: rebuild the entry (ID re-read, archive looked up again) and compare with the target again
+  const entryOf = new Map();
+  for (const p of [...chosen, ...[...movedBy.values()].flat()]) {
+    if (!edits.has(p.id) || edits.get(p.id) === p.entry.url) continue;
+    setStage("reading the edited address…");
+    const ne = await editedEntry(p, edits.get(p.id), signal);
+    if (ne) { entryOf.set(p.id, ne); dlog("REVIEW", `URL edited: ${p.entry.url} -> ${ne.url}${ne.property ? `  (${ne.property}: ${ne.value})` : ""}`); }
+    else skipped.push({ label: p.entry.label, url: edits.get(p.id), reason: "edited address not usable – the original was kept" });
+  }
+  const entryFor = p => entryOf.get(p.id) || p.entry;
+  let editedPresent = [];
+  if (!cancelled && chosen.some(p => entryOf.has(p.id))) {
+    setStage("comparing the edited rows with the item on Wikidata…");
+    const planE = await planSources(item, chosen.map(entryFor), signal);
+    editedPresent = planE.filter(p => p.status === "exists");
+    chosen = planE.filter(p => p.status !== "exists");
   }
   let deferred = [];
   if (chosen.length > s.maxPerEdit) { deferred = chosen.slice(s.maxPerEdit); chosen = chosen.slice(0, s.maxPerEdit); }
+  if (movedBy.size) dlog("REVIEW", "rows sent to other targets", [...movedBy].map(([T, ps]) => `${T}: ${ps.map(p => describe(p.entry)).join(" | ")}`));
 
-  // --- write (one edit) ---
-  if (chosen.length && !cancelled) await commit(item, plan, chosen, s, signal);
+  // --- write (one edit per target) ---
+  let failure = null;
+  const written = [];                                  // [{target, p}] everything really saved
+  const presentBy = new Map([[item, [...present, ...editedPresent]]]);        // target -> changes that turned out to be there already
+  if (chosen.length && !cancelled) {
+    try { await commit(item, plan, chosen, s, signal); chosen.forEach(p => written.push({ target: item, p })); } catch (e) { failure = e; }
+  }
+  if (!cancelled && !failure) for (const [T, ps] of movedBy) {
+    try {
+      setStage(`comparing with ${T} on Wikidata…`);
+      const planT = await planSources(T, ps.map(entryFor), signal);
+      dlog("PLAN", `${planT.length} entries compared with ${T}`, planT.map(p => `${p.status}${p.group ? " (shared P1343)" : ""}: ${describe(p.entry)}`), 5000);
+      presentBy.set(T, planT.filter(p => p.status === "exists"));
+      let freshT = planT.filter(p => p.status !== "exists");
+      if (freshT.length > s.maxPerEdit) { deferred.push(...freshT.slice(s.maxPerEdit).map(p => ({ ...p, target: T }))); freshT = freshT.slice(0, s.maxPerEdit); }
+      if (freshT.length) { await commit(T, planT, freshT, s, signal); freshT.forEach(p => written.push({ target: T, p })); }
+    } catch (e) { failure = e; break; }               // what was already saved is still recorded below
+  }
+  chosen = written.map(w => Object.assign(w.p, { target: w.target }));
+  const multi = new Set([item, ...movedBy.keys()]).size > 1;
+  const at = p => (p.target && p.target !== item ? ` → ${p.target}` : "");
 
   // --- history ---
   const now = Date.now();
-  const items = history.items[item] = history.items[item] || {};
-  const rec = (p, k) => { const e = p.entry; items[entryKey(e)] = {
+  const rec = (T, p, k) => { const e = p.entry; const items = history.items[T] = history.items[T] || {}; items[entryKey(e)] = {
     t: now, k, y: e.property ? "id" : "src", n: e.label, q: e.site.qid || "", p: e.property || "", u: e.url, v: e.value || "",
     a: !!(e.archive || (p.claim && hasQual(p.claim, P_ARCH))) }; };
-  if (!cancelled) chosen.forEach(p => rec(p, "pushed"));
-  present.forEach(p => rec(p, "present"));
+  if (!cancelled) written.forEach(w => rec(w.target, w.p, "pushed"));
+  for (const [T, ps] of presentBy) ps.forEach(p => rec(T, p, "present"));
   await saveHistory(history, misses);
-  dlog("INFO", `history: ${chosen.length && !cancelled ? chosen.length : 0} pushed, ${present.length} present, ${Object.keys(misses).length} cached misses`);
+  dlog("INFO", `history: ${written.length} pushed, ${[...presentBy.values()].flat().length} present, ${Object.keys(misses).length} cached misses`);
+  if (failure) {
+    if (written.length && !signal.aborted && failure.message) failure.message = `Already saved (${written.map(w => describe(w.p.entry) + at({ target: w.target })).join("; ")}). Then: ` + failure.message;
+    throw failure;
+  }
 
   // --- report ---
   const lines = [
     ...(cancelled ? ["✗ review cancelled – nothing written"] : []),
-    ...(cancelled ? [] : chosen.map(p => `✓ ${p.status === "archive-added" ? "archive URL added to existing statement" : "added"}: ${describe(p.entry)}`)),
-    ...deferred.map(p => `… deferred (more than ${s.maxPerEdit} per edit): ${describe(p.entry)}`),
-    ...present.map(p => `= already present: ${describe(p.entry)}`),
+    ...(cancelled ? [] : chosen.map(p => `✓ ${p.status === "archive-added" ? "archive URL added to existing statement" : "added"}: ${describe(p.entry)}${at(p)}`)),
+    ...deferred.map(p => `… deferred (more than ${s.maxPerEdit} per edit): ${describe(p.entry)}${at(p)}`),
+    ...[...presentBy].flatMap(([T, ps]) => ps.map(p => `= already present${T !== item ? " on " + T : ""}: ${describe(p.entry)}`)),
     ...knownLines.map(l => `= in your history log (not re-checked): ${l}`),
     ...skipped.map(n => `– skipped: ${n.label}${n.url ? " – " + n.url : ""} (${n.reason})`)
   ];
@@ -1003,8 +1258,8 @@ async function runInner(tab, only, s, signal, configure = false) {
 
   const tag = p => (p.entry.property ? ` (${p.entry.property})` : "") + (p.entry.archive ? " +archive" : "");
   const msg = [
-    ...chosen.slice(0, 4).map(p => `✓ ${p.entry.label}${tag(p)}`),
-    ...present.slice(0, 2).map(p => `= ${p.entry.label} (already there)`),
+    ...chosen.slice(0, 4).map(p => `✓ ${p.entry.label}${tag(p)}${at(p)}`),
+    ...[...presentBy.values()].flat().slice(0, 2).map(p => `= ${p.entry.label} (already there)`),
     knownLines.length ? `= ${knownLines.length} already in your log` : null,
     deferred.length ? `… ${deferred.length} deferred – run again for the rest` : null,
     skipped.length ? `– ${skipped.length} skipped/not found` : null
@@ -1014,15 +1269,15 @@ async function runInner(tab, only, s, signal, configure = false) {
   const trouble = (current?.blocked.size || 0) > 0 || skipped.some(n => /timeout|network error|rate-limited|blocking|failed|HTTP 5|HTTP 403|HTTP 429/.test(n.reason));
   const noPerm = skipped.some(n => /no permission/.test(n.reason));
   if (chosen.length) {
-    const groups = groupCounts(chosen), split = groups.length > 1 ? groups.join("+") : "";
+    const groups = [...new Set(chosen.map(p => p.target || item))].flatMap(T => groupCounts(chosen.filter(p => (p.target || item) === T))), split = groups.length > 1 ? groups.join("+") : "";
     let badge = split || "+" + chosen.length;
     if (trouble) badge += "!";
     if (badge.length > 4) badge = "+" + chosen.length + (trouble ? "!" : "");     // the badge only has room for ~4 characters
     dlog("INFO", `written: ${chosen.length} change(s) in ${groups.length} statement(s)`, groups);
     return { kind: trouble ? "partial" : "ok", badge,
-      title: `${badge}  ${trouble ? "Saved with problems" : "Saved " + chosen.length + " source" + (chosen.length > 1 ? "s" : "")}${split ? " (" + split + ")" : ""} on ${item}`, message: msg };
+      title: `${badge}  ${trouble ? "Saved with problems" : "Saved " + chosen.length + " source" + (chosen.length > 1 ? "s" : "")}${split ? " (" + split + ")" : ""} on ${multi ? [...new Set(chosen.map(p => p.target || item))].join(", ") : item}`, message: msg };
   }
-  if (present.length || knownLines.length) return { kind: "present", message: msg || "Nothing new." };
+  if (presentBy.size && [...presentBy.values()].some(a => a.length) || knownLines.length) return { kind: "present", message: msg || "Nothing new." };
   if (current?.robotSeen) return { kind: "robot", message: "A website asked you to confirm you are not a robot.\n" + msg };
   if ((current?.blocked.size || 0) > 0) return { kind: "blocked", message: msg + "\nBlocked: " + [...current.blocked].join(", ") };
   if (noPerm) return { kind: "perm", message: "Open Settings and press “Save all” to give the extension access to the websites in your templates/search URLs.\n" + msg };

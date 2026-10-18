@@ -1,0 +1,27 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Term to search for – Wikidata Source Saver</title>
+<meta name="color-scheme" content="light dark">
+<style>
+  :root{--bg:#fff;--fg:#222;--muted:#666;--border:#c8ccd1;--card:#f8f9fa;--btn:#f1f3f5;--prim:#1565c0;--err:#b3261e}
+  @media (prefers-color-scheme:dark){:root{--bg:#1b1d20;--fg:#e4e6e8;--muted:#9aa0a6;--border:#464b52;--card:#212428;--btn:#2f3338;--prim:#4f8fe0;--err:#f2b8b5}}
+  body{font:14px system-ui,sans-serif;margin:0;padding:16px;background:var(--bg);color:var(--fg)}
+  h1{font-size:1.1rem;margin:0 0 8px} p{margin:8px 0} .m{color:var(--muted);font-size:12px} code{word-break:break-all}
+  input{width:100%;box-sizing:border-box;padding:8px;font:inherit;background:var(--card);color:var(--fg);border:1px solid var(--border);border-radius:5px}
+  #err{color:var(--err);min-height:1.2em;font-size:12px;margin:4px 0 0}
+  .btns{display:flex;gap:8px;margin-top:12px}
+  button{padding:9px 12px;font:inherit;cursor:pointer;border:1px solid var(--border);border-radius:5px;background:var(--btn);color:var(--fg)}
+  button.p{background:var(--prim);border-color:var(--prim);color:#fff}
+</style></head>
+<body>
+<h1>What should be searched for?</h1>
+<p id="what"></p>
+<input id="term" autocomplete="off" spellcheck="false">
+<p id="err"></p>
+<p class="m" id="ex"></p>
+<p class="m" id="info"></p>
+<div class="btns">
+  <button class="p" id="ok">Search other websites</button>
+  <button id="skip">Skip – only save this page</button>
+</div>
+<script type="module" src="ask.js"></script>
+</body></html>

@@ -3,6 +3,9 @@ import { EN_WORDS } from "./wordlist-en.js";
 
 export const DEFAULTS = {
   related: true, redirects: "skip", labelLang: "en", username: "",
+  relatedMode: "sites",    // how other sources are found: sites = ask every website of the category (URL guesses + site searches) | google = ONE verbatim Google search per term
+  googlePages: 2,          // result pages read in that Google search (about 10 results each)
+  confirmTerm: "always",   // ask which term to search for on other websites: always | noid (only when the template has no {id}) | never
   review: "auto",          // auto = ask when more than reviewThreshold new statements or when anything came from a site search
   reviewThreshold: 3,
   maxPerEdit: 5,           // statements added in ONE edit
@@ -671,6 +674,40 @@ export function extractLinks(html, base) {
     try { out.push({ href: new URL(href, base).toString(), text }); } catch { /* skip */ }
   }
   return out;
+}
+
+// ---------- blocked sites ----------
+// "https://www.Example.com/forum/x" -> "example.com" ("" when it can't be a website). A blocked site also blocks its subdomains.
+export function normBlockHost(x) {
+  const t = String(x || "").replace(/#.*$/, "").trim().toLowerCase().replace(/^[a-z][a-z0-9+.-]*:\/\//, "").replace(/[/?:].*$/, "").replace(/^www\./, "");
+  return /^[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(t) ? t : "";
+}
+// the entry of the block list that covers this URL ("" = not blocked)
+export function blockedHost(list, url) {
+  let h = ""; try { h = new URL(url).hostname.toLowerCase().replace(/^www\./, ""); } catch { return ""; }
+  for (const b of list || []) if (h === b || h.endsWith("." + b)) return b;
+  return "";
+}
+
+// ---------- "one verbatim Google search" mode ----------
+// Google's Verbatim mode (tbs=li:1) searches the words as typed: no synonyms, spelling corrections or dropped words. hl=en keeps the buttons the search script clicks in English.
+export const googleVerbatimUrl = term => `https://www.google.com/search?q=${encodeURIComponent(term)}&tbs=li:1&hl=en`;
+export const googleScript = pages => 'click button "Accept all"\ncollect' + (pages > 1 ? `\npages link "Page {n}" max=${Math.min(5, pages)}` : "");
+const GOOGLE_NOISE = /(^|\.)(google\.[a-z.]+|googleusercontent\.com|gstatic\.com|googleadservices\.com|doubleclick\.net|wikidata\.org|schema\.org)$/i;
+// links read from a Google results page -> [{url, text}]: redirects unwrapped, Google's own links/ads dropped, one entry per page (the longest link text = the title)
+export function googleHits(links) {
+  const out = new Map();
+  for (const l of links || []) {
+    const href = unwrapRedirect(l.href || "");
+    let u; try { u = new URL(href); } catch { continue; }
+    if (!/^https?:$/.test(u.protocol) || GOOGLE_NOISE.test(u.hostname)) continue;
+    u.hash = "";
+    const k = normUrl(u.href), text = String(l.text || "").replace(/\s+/g, " ").trim();
+    const old = out.get(k);
+    if (!old) out.set(k, { url: u.href, text });
+    else if (text.length > old.text.length) old.text = text;
+  }
+  return [...out.values()];
 }
 
 // search engines wrap result links: google.com/url?q=<target>, duckduckgo.com/l/?uddg=<target>

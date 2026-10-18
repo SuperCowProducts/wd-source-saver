@@ -190,11 +190,18 @@ Case/slash/www differences are always accepted. Real redirects (ProofWiki `Big_O
 Settings -> "Allow all websites in one go…" asks Chrome once for access to every website (the extension still only contacts the ones you configured). "Remove all-websites
 access" takes it away again (websites you allowed individually stay allowed).
 
-## Website data file (e.g. ~/Nextcloud/data.json)
-Settings -> "Website data file": "Create a file…" / "Use an existing file…" links a JSON file on your computer. While linked, the file is the source of truth: every run reads it,
-"Save all" writes it (asking first if the file changed elsewhere), "Reload from file" re-reads it. A copy is always kept in the browser and used whenever Chrome has not (re)granted
-access to the file (e.g. after a restart: "Re-grant access"); runs then say so in the last-run list and log. Optionally the Safety & politeness settings live in the file too.
-Needs a Chromium browser with the File System Access API. History log, cache and debug logs stay in the browser.
+## Data file = your whole environment (e.g. ~/Nextcloud/data.json)
+Settings -> "Website data file": "Create a file…" / "Use an existing file…" links one JSON file on your computer. It holds **everything you configured or accumulated**:
+the websites, all settings, the blocked sites, the history log (what was saved / already present, per item) and the "page doesn't exist" cache.
+**Restoring** on a new browser/computer: install the extension, Settings -> "Use an existing file…" -> pick the file. A summary tells you what will be loaded (websites, settings, N blocked sites, N history records, N cached misses); after you confirm, the environment is exactly as it was.
+(Chrome's permission to open websites is the one thing a file can't carry: press "Save all" once afterwards.)
+* While linked, the file is the source of truth: every run reads it. It is **kept up to date automatically**: after each run (new history records are *merged* into the file, so another computer's records are not lost),
+  when a site is blocked in the review window (merged), when you press "Save all" (writes everything), and when you clear/forget/import history or clear the cache in Settings (those *replace* the part, so a cleared log stays cleared).
+* "Write everything to the file" writes the browser's current state into the file on demand; "Reload from file" re-reads it (asking first). Saving asks first if the file was changed elsewhere (Nextcloud sync).
+* A copy is always kept in the browser and used when Chrome has not (re)granted access to the file (e.g. after a restart: "Re-grant access"). If a write to the file fails, the browser copy is flagged as newer: the run report and notification
+  say so, the stale file never overwrites it, and "Write everything to the file" (or the next successful write) brings the file up to date. A file that can't be read as a data file is never overwritten automatically.
+* Files from older versions (websites, optionally settings) still load: whatever they lack keeps the browser's copy and is written into the file when you connect it.
+* Not in the file (not configuration): the debug log, the last-run report and the edit-rate counters (hourly limit). Needs a Chromium browser with the File System Access API.
 
 ## Configure a website from Wikidata (clipboard)
 Copy an item or property the way Wikidata shows it in its heading and run the extension on a page that isn't configured yet:
@@ -224,3 +231,41 @@ Some websites put the slug in the URL but keep the real ID in the page (e.g. `�
   (one extra request per page, same politeness rules). Tick **send my browser's cookies** for logged-in/subscription sites. An edited address in the review window is re-read when you save.
 * From a web.archive.org snapshot, or when the page can't be fetched, nothing is saved for it (the slug is never stored as the ID); the reason is listed under "not saved".
 * If no line matches, the debug log shows snippets around long numbers on the page, so a line can be written.
+
+## Confirming the search term
+Before other websites are searched, a small window asks which term to look for, because a URL's words are often not the term
+(`…/research-starters/political-science/bipartisanship-overview/` -> you probably want `bipartisanship`). The field is pre-filled with the text you had selected on the page, else the URL's words;
+press Enter to accept. **Skip** (or Esc) saves the page without searching other websites at all. The setting **Confirm the search term** (Settings) can be `always` (default),
+`only when the URL template has no {id}` or `never`.
+* Templates without `{id}` (e.g. `https://www.bankofcanada.ca/{path}/`, …/2026/02/what-is-money/) have no single term in their URL, so their words are never searched unasked: the terms you typed on the clipboard
+  (`Q123, money`) are used, and when there are none you are asked (whatever the setting, except `never`).
+* Terms typed on the clipboard are always searched in addition (shown in the window); they don't make the question go away for an `{id}` URL.
+* Asked only when other websites would actually be searched (related websites on, the page has a category, not a "save this page only" run).
+* The text-fragment feature is unchanged: with it enabled, the selected text is still added to the saved URL as `#:~:text=…`.
+
+## Finding other sources with ONE verbatim Google search
+Settings -> **Finding other sources**: `ask every website of the category` (default: URL guesses + each website's own search) or
+`one verbatim Google search per term`. In Google mode no website is asked one by one: for each term (the confirmed page term and up to two terms typed on the clipboard)
+a background tab opens Google's **Verbatim** search (`tbs=li:1`: no synonyms, no spelling "corrections", no dropped words), accepts the cookie banner and reads
+**Google result pages to read** pages (1-5, about 10 results each). Press "Save all" once after switching, so the extension may open google.com.
+Every result page then lands in the review window (which always opens in this mode):
+* a result from **a website you have configured**, in the page's category -> **ticked** (its ID is read with that website's templates, like any other result);
+* a result from a website you have configured but in **another category** -> listed, **not ticked**;
+* a result from **a website that is not in your settings** -> listed, **not ticked**. Tick it and type the **website item** (Q...) of the site/publisher - Save stays disabled until you have.
+  "Also add this website to Settings" (on by default) opens Settings afterwards with it pre-filled (name, Q, domain, the page's category); press "Save all" there and the website is ticked automatically next time.
+The Google link text is shown under each row to help you decide. Google's own links, ads and wikidata.org are ignored; at most 30 unknown-website results are listed.
+A Google CAPTCHA stops the search and shows the usual notification (solve it in a normal tab). The other options (confirming the term, the per-edit limit and its exception, text fragments) work as before.
+
+## Blocking sites
+In the review window every row has a **block example.com** button (also on Google rows from unknown websites). Pressing it greys out, unticks and disables all rows of that site; press again to undo.
+The site is added to the block list when the window is closed with **Save or Cancel** (closing it with the window's X changes nothing).
+Settings -> **Blocked sites** is the same list as plain text (one site per line, `example.com` also blocks `www.` and subdomains, a pasted URL is cut down to its site, `#` comments); it is saved with "Save all".
+A blocked site is left out *before* anything is requested or shown (URL guesses, site searches, Google hits, redirects that end up there). The page you are on is never blocked.
+You are still told: the review window shows "Left out because of your block list: example.com (3)", the run report lists every left-out page (`⛔ blocked site …`), and the notification
+says how many results were left out and from which sites (and which sites you just blocked). The list is part of the data file (and of the browser copy).
+
+## No review timeout
+The review window (and the term and Wikidata-lag questions) wait for you as long as you like, like an open document: no timer closes them. They end when you submit, cancel, close the window, or press Stop (which also closes them).
+Nothing is written to Wikidata before you submit. After you submit, the script's own limits apply again (waiting between edits, search timeouts, ...).
+If the window was open for more than a minute, the ticked rows are compared once more with the current item before saving, so a statement added or changed by someone else in the meantime is neither overwritten nor duplicated;
+anything that is already there by then is reported as "already present".

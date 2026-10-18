@@ -149,14 +149,22 @@ Wikidata labels and aliases are never used – only the page's own ID and the ex
   Removing it keeps the individual websites you allowed earlier.</p>
 </div>
 
+<h2>Blocked sites</h2>
+<div class="card">
+  <p class="hint" style="margin-top:0">Results from these sites are never offered: no request is made to them and they don't appear in the review window. One site per line (<code>example.com</code> also blocks its subdomains; a pasted URL is reduced to its site; <code>#</code> starts a comment).
+  Add sites with the <b>block</b> button in the review window. When something is left out because of this list, the run report and notification say so.
+  This list is part of the data file below, so it is restored with everything else.</p>
+  <textarea id="blockedSites" rows="5" spellcheck="false" placeholder="example.com"></textarea>
+</div>
+
 <h2>Website data file</h2>
 <div class="card" id="fileCard">
-  <p class="hint">Keep your websites in a JSON file on your computer (for example in a Nextcloud folder) instead of only inside the browser. The file becomes the source of truth;
-  the browser keeps a copy that is used whenever Chrome has not (re)granted access to the file. Chrome may ask again after a restart – use “Re-grant access”.</p>
+  <p class="hint">Keep your whole setup in one JSON file on your computer (for example in a Nextcloud folder) instead of only inside the browser: <b>websites, settings, blocked sites, the history log and the “page doesn't exist” cache</b>.
+  Connecting that file in a fresh browser restores everything exactly as it was. The file becomes the source of truth and is kept up to date automatically after every run and every change here;
+  the browser keeps a copy that is used whenever Chrome has not (re)granted access to the file. Chrome may ask again after a restart – use “Re-grant access”. Not included: the debug log, the last-run report and the edit-rate counters.</p>
   <p id="fileState"></p>
   <p class="bar"><button id="fileOpen">Use an existing file…</button><button id="fileNew">Create a file…</button>
-    <button id="fileReload" hidden>Reload from file</button><button id="fileRegrant" hidden>Re-grant access</button><button id="fileOff" hidden>Disconnect</button></p>
-  <label><input type="checkbox" id="fileInc">Also keep the Safety &amp; politeness settings in the file (includes your username)</label>
+    <button id="fileWrite" hidden title="Write websites, settings, blocked sites and history into the file now">Write everything to the file</button><button id="fileReload" hidden>Reload from file</button><button id="fileRegrant" hidden>Re-grant access</button><button id="fileOff" hidden>Disconnect</button></p>
 </div>
 
 <p class="hint">Saving asks Chrome for permission to read the websites in your templates/search URLs (needed to check pages).</p>
@@ -166,6 +174,9 @@ Wikidata labels and aliases are never used – only the page's own ID and the ex
   <div class="g3">
     <label>Your Wikidata username <span class="hint">(goes into the User-Agent so admins can contact you)</span><input id="s_username" placeholder="ExampleUser"></label>
     <label>Label language<input id="s_labelLang" placeholder="en"></label>
+    <label>Finding other sources<select id="s_relatedMode"><option value="sites">ask every website of the category (URL guesses + site searches)</option><option value="google">one verbatim Google search per term – hits from my websites are ticked, others I tick myself</option></select></label>
+    <label>Google result pages to read (Google mode)<input type="number" id="s_googlePages" min="1" max="5"></label>
+    <label>Confirm the search term<select id="s_confirmTerm"><option value="always">always (before searching other websites)</option><option value="noid">only when the URL template has no {id}</option><option value="never">never – use the URL's words</option></select></label>
     <label>Review window<select id="s_review"><option value="auto">only for many changes or site-search results</option><option value="always">always</option><option value="never">never</option></select></label>
   </div>
   <div class="g4">

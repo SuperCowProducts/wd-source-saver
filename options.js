@@ -1,6 +1,6 @@
-import { buildCandidates, originsFor, checkUrl, dedupeIds, effectiveMatch, cats, cleanTerm, usable, DEFAULTS,
+import { buildCandidates, originsFor, checkUrl, dedupeIds, effectiveMatch, cats, cleanTerm, usable, DEFAULTS, normBlockHost,
   exportSettingsObject, parseSettingsImport, parseSearchScript, langsOf, KINDS, MEDIAWIKI_EXCLUDE } from "./lib.js";
-import { getSites, getSettings, saveAll, getFileLink, setFileLink, updateFileLink, clearFileLink, readDataFile, writeDataFile, filePermission } from "./store.js";
+import { getSites, getSettings, saveAll, getFileLink, setFileLink, updateFileLink, clearFileLink, readDataFile, writeDataFile, filePermission, saveState, pushToFile } from "./store.js";
 
 const $ = id => document.getElementById(id);
 let sites = [], idx = -1, settings = { ...DEFAULTS };
@@ -151,7 +151,7 @@ function refreshCats() {
 
 // ---------- settings ----------
 const SET_FIELDS = [
-  ["username", "s_username"], ["labelLang", "s_labelLang"], ["review", "s_review"], ["redirects", "s_redirects"],
+  ["username", "s_username"], ["labelLang", "s_labelLang"], ["review", "s_review"], ["confirmTerm", "s_confirmTerm"], ["relatedMode", "s_relatedMode"], ["googlePages", "s_googlePages", "num"], ["redirects", "s_redirects"],
   ["reviewThreshold", "s_reviewThreshold", "num"], ["maxPerEdit", "s_maxPerEdit", "num"], ["minEditInterval", "s_minEditInterval", "num"],
   ["maxEditsPerHour", "s_maxEditsPerHour", "num"], ["hostDelayMs", "s_hostDelayMs", "num"], ["maxPerSite", "s_maxPerSite", "num"],
   ["maxTotal", "s_maxTotal", "num"], ["maxlag", "s_maxlag", "num"], ["captchaWaitSeconds", "s_captchaWaitSeconds", "num"], ["scriptMaxClicks", "s_scriptMaxClicks", "num"], ["scriptMaxSeconds", "s_scriptMaxSeconds", "num"], ["missTtlDays", "s_missTtlDays", "num"],
@@ -169,6 +169,7 @@ function collectSettings() {
     else o[k] = el.value.trim() || DEFAULTS[k];
   }
   o.maxPerEdit = Math.max(1, Math.min(20, o.maxPerEdit));
+  o.googlePages = Math.max(1, Math.min(5, Math.round(o.googlePages) || 2));
   o.maxlag = Math.max(0, Math.min(60, o.maxlag));
   o.captchaWaitSeconds = Math.max(0, Math.min(900, o.captchaWaitSeconds));
   o.scriptMaxClicks = Math.max(1, Math.min(200, o.scriptMaxClicks));
@@ -185,9 +186,13 @@ $("save").onclick = async () => {
   }
   const clean = sites.map(normalizeSite).filter(s => s.qid || s.idProperty || s.templates.length || s.match || s.searchUrl);
   const origins = originsFor(clean);
+  if (collectSettings().relatedMode === "google") origins.push("*://www.google.com/*", "*://google.com/*");   // the verbatim Google search runs in a background tab
   let granted = true;
   if (origins.length) { try { granted = await chrome.permissions.request({ origins }); } catch (e) { console.error(e); granted = false; } }
   settings = collectSettings();
+  const blocked = [...new Set($("blockedSites").value.split(/\r?\n/).map(normBlockHost).filter(Boolean))];
+  await chrome.storage.local.set({ blockedSites: blocked });
+  $("blockedSites").value = blocked.join("\n");
   await saveAll(clean, settings);
   const fileMsg = await writeLinkedFile(clean, settings);
   sites = clean; idx = Math.min(idx, sites.length - 1); renderSelect(); if (idx >= 0) loadEditor(); loadSettings();
@@ -273,19 +278,33 @@ async function refreshFileUi() {
       (fileStatus ? ` · last: ${fileStatus.ok ? "OK" : "⚠"} ${fileStatus.msg}` : "");
   }
   if (fileNote) $("fileState").textContent += `  ⚠ ${fileNote}`;
-  for (const id of ["fileReload", "fileRegrant", "fileOff"]) $(id).hidden = !link;
-  $("fileInc").checked = !!link?.includeSettings;
+  for (const id of ["fileWrite", "fileReload", "fileRegrant", "fileOff"]) $(id).hidden = !link;
 }
 
+// the whole environment as it is now: the editor's websites + settings, and what the browser holds of blocked sites, history log and cache
+async function fullState(clean, settingsNow) {
+  const loc = await chrome.storage.local.get(["blockedSites", "history", "misses"]);
+  return { sites: clean, settings: settingsNow, blockedSites: loc.blockedSites || [], history: loc.history, misses: loc.misses };
+}
 async function loadFromHandle(handle, announce) {
   const data = await readDataFile(handle);
-  if (!confirm(`Load ${data.sites.length} website${data.sites.length === 1 ? "" : "s"} from “${handle.name}”? They replace the websites currently in the editor.`)) return null;
+  const nHist = Object.values(data.history?.items || {}).reduce((a, m) => a + Object.keys(m).length, 0);
+  const has = [`${data.sites.length} website${data.sites.length === 1 ? "" : "s"}`, data.settings && "settings", data.blockedSites && `${data.blockedSites.length} blocked site${data.blockedSites.length === 1 ? "" : "s"}`,
+    data.history && `${nHist} history record${nHist === 1 ? "" : "s"}`, data.misses && `${Object.keys(data.misses).length} cached “doesn't exist” pages`].filter(Boolean);
+  const lacks = [!data.settings && "settings", !data.blockedSites && "blocked sites", !data.history && "history log", !data.misses && "cache"].filter(Boolean);
+  if (!confirm(`Load ${has.join(", ")} from “${handle.name}”? They replace what is currently in this browser.` +
+      (lacks.length ? `\n\nNot in this file yet (older version): ${lacks.join(", ")} – this browser's copy is kept and will be written into the file.` : ""))) return null;
   sites = data.sites; idx = sites.length ? 0 : -1;
-  await chrome.storage.local.set({ sites });                               // browser copy = fallback
-  if ($("fileInc").checked && data.settings) { settings = { ...settings, ...data.settings }; loadSettings(); await chrome.storage.local.set({ settings }); }
+  if (data.settings) { settings = { ...settings, ...data.settings }; loadSettings(); }
+  await chrome.storage.local.set({ sites,                                    // browser copy = fallback
+    ...(data.settings ? { settings } : {}), ...(data.blockedSites ? { blockedSites: data.blockedSites } : {}),
+    ...(data.history ? { history: data.history } : {}), ...(data.misses ? { misses: data.misses } : {}) });
+  await chrome.storage.local.remove("fileDirty");
+  if (data.blockedSites) $("blockedSites").value = data.blockedSites.join("\n");
   renderSelect(); if (idx >= 0) loadEditor();
-  if (announce) $("status").textContent = `Loaded ${data.sites.length} websites from ${handle.name}.`;
-  return data;
+  try { showStats(); } catch { /* history card not ready */ }
+  if (announce) $("status").textContent = `Loaded ${has.join(", ")} from ${handle.name}.`;
+  return { ...data, complete: !lacks.length };
 }
 
 $("fileOpen").onclick = async () => {
@@ -294,7 +313,7 @@ $("fileOpen").onclick = async () => {
     const [h] = await window.showOpenFilePicker({ types: JSON_TYPES, multiple: false });
     if (!(await ensureRW(h))) { fileNote = "Access to the file was not granted."; return; }
     const data = await loadFromHandle(h, true);
-    if (data) await setFileLink(h, { includeSettings: $("fileInc").checked, lastSeen: data.modified });
+    if (data) { await setFileLink(h, { lastSeen: data.modified }); if (!data.complete) await pushToFile(); }          // an older file: fill in what it lacks
   } catch (e) { if (e?.name !== "AbortError") fileNote = "Could not use the file: " + (e.message || e); }
   refreshFileUi();
 };
@@ -304,8 +323,9 @@ $("fileNew").onclick = async () => {
     const h = await window.showSaveFilePicker({ suggestedName: "wikidata-source-saver-data.json", types: JSON_TYPES });
     if (!(await ensureRW(h))) { fileNote = "Access to the file was not granted."; return; }
     settings = collectSettings();
-    const mod = await writeDataFile(h, currentClean(), settings, $("fileInc").checked);
-    await setFileLink(h, { includeSettings: $("fileInc").checked, lastSeen: mod });
+    const mod = await writeDataFile(h, await fullState(currentClean(), settings));
+    await setFileLink(h, { lastSeen: mod });
+    await chrome.storage.local.remove("fileDirty");
     $("status").textContent = `Created ${h.name} with ${currentClean().length} websites.`;
   } catch (e) { if (e?.name !== "AbortError") fileNote = "Could not create the file: " + (e.message || e); }
   refreshFileUi();
@@ -321,7 +341,11 @@ $("fileRegrant").onclick = async () => {
   fileNote = ""; const link = await getFileLink(); if (link) await ensureRW(link.handle); refreshFileUi(); };
 $("fileOff").onclick = async () => {
   fileNote = ""; if (confirm("Disconnect from the file? Your websites stay in the browser copy; the file is left untouched.")) { await clearFileLink(); refreshFileUi(); } };
-$("fileInc").onchange = async () => { await updateFileLink({ includeSettings: $("fileInc").checked }); };
+$("fileWrite").onclick = async () => {
+  fileNote = ""; settings = collectSettings();
+  $("status").textContent = (await writeLinkedFile(currentClean(), settings)) || "No file is connected.";
+  refreshFileUi();
+};
 
 // called by "Save all": keep the file in step with the editor
 async function writeLinkedFile(clean, settingsNow) {
@@ -334,9 +358,11 @@ async function writeLinkedFile(clean, settingsNow) {
         !confirm(`“${link.name}” was changed since you last loaded or saved it (another computer, Nextcloud sync…). Overwrite it with the websites in this editor?`)) {
       return "⚠ the file was left unchanged (it is newer than your editor).";
     }
-    const mod = await writeDataFile(link.handle, clean, settingsNow, link.includeSettings);
+    const mod = await writeDataFile(link.handle, await fullState(clean, settingsNow));
     await updateFileLink({ lastSeen: mod });
-    return `✓ written to ${link.name}.`;
+    await chrome.storage.local.remove("fileDirty");
+    await chrome.storage.local.set({ fileStatus: { ok: true, time: Date.now(), msg: `everything written to ${link.name}` } });
+    return `✓ everything (websites, settings, blocked sites, history) written to ${link.name}.`;
   } catch (e) { return "⚠ the file could not be written: " + (e.message || e); }
   finally { refreshFileUi(); }
 }
@@ -435,7 +461,7 @@ $("check").onclick = async () => {
     out.appendChild(d);
     if (gap) { try { await new Promise((res, rej) => { const t = setTimeout(res, gap); ctrl.signal.addEventListener("abort", () => { clearTimeout(t); rej(); }, { once: true }); }); } catch { break; } }
   }
-  if (cleared) await chrome.storage.local.set({ misses: cache });
+  if (cleared) await saveState({ misses: cache });
   const stopped = ctrl.signal.aborted;
   checkCtrl = null; $("check").disabled = false; $("checkstop").hidden = true; $("checkmsg").textContent = "";
   const term = $("tterm").value.trim();
@@ -485,7 +511,7 @@ $("hfile").onchange = async () => {
       for (const [k, r] of Object.entries(recs)) if (!mine[k] || (r.t || 0) > (mine[k].t || 0)) { if (!mine[k]) added++; mine[k] = r; }
     }
     for (const [u, v] of Object.entries(d.misses || {})) if (missT(v) > missT(misses[u])) misses[u] = typeof v === "number" ? { t: v, why: "imported" } : v;
-    await chrome.storage.local.set({ history, misses });
+    await saveState({ history, misses });
     $("hstats").textContent = `Imported (${added} new statements). `; setTimeout(showStats, 2500);
   } catch (e) { alert("Import failed: " + e.message); }
 };
@@ -496,13 +522,13 @@ $("hrecent").onclick = async () => {
   const out = $("hout"); out.hidden = false;
   out.textContent = rows.map(r => `${new Date(r.t).toISOString().slice(0, 16).replace("T", " ")}  ${r.k === "pushed" ? "pushed " : "present"}  ${r.q}  ${r.n}  ${r.p ? r.p + ": " + r.v : r.u}${r.a ? "  (+archive)" : ""}`).join("\n") || "Empty.";
 };
-$("hclear").onclick = async () => { if (confirm("Delete the whole history log?")) { await chrome.storage.local.set({ history: { items: {} } }); showStats(); } };
-$("hclearmiss").onclick = async () => { await chrome.storage.local.set({ misses: {} }); showStats(); };
+$("hclear").onclick = async () => { if (confirm("Delete the whole history log?")) { await saveState({ history: { items: {} } }); showStats(); } };
+$("hclearmiss").onclick = async () => { await saveState({ misses: {} }); showStats(); };
 $("hforgetbtn").onclick = async () => {
   const q = ($("hforget").value.match(/Q\d+|L\d+(?:-[FS]\d+)?/i) || [""])[0].toUpperCase();
   if (!q) return;
   const { history } = await getHist(); delete history.items[q];
-  await chrome.storage.local.set({ history }); $("hforget").value = ""; showStats();
+  await saveState({ history }); $("hforget").value = ""; showStats();
 };
 
 // ---------- import / export websites ----------
@@ -538,9 +564,11 @@ for (const [kind, k] of Object.entries(KINDS)) {
   sites = await getSites();
   settings = await getSettings();
   loadSettings();
+  $("blockedSites").value = ((await chrome.storage.local.get("blockedSites")).blockedSites || []).join("\n");
   // a website defined from the clipboard ("Label (Q…)" / "Label (P…)") was handed over by the background script
-  const { pendingSite } = await chrome.storage.local.get("pendingSite");
-  if (pendingSite) {
+  const { pendingSite: pendingRaw } = await chrome.storage.local.get("pendingSite");
+  const pendingList = Array.isArray(pendingRaw) ? pendingRaw : pendingRaw ? [pendingRaw] : [];      // several when websites were ticked in the review window
+  for (const pendingSite of pendingList) {
     await chrome.storage.local.remove("pendingSite");
     const key = s => (pendingSite.qid && s.qid === pendingSite.qid) || (pendingSite.idProperty && s.idProperty === pendingSite.idProperty);
     const norm = t => t.trim().replace(/^[a-z][a-z0-9+.-]*:\/\//i, "").replace(/^www\./i, "").toLowerCase();
@@ -553,16 +581,17 @@ for (const [kind, k] of Object.entries(KINDS)) {
       if (!sites[i].name) sites[i].name = pendingSite.name;
       note.textContent = `“${siteLabel(sites[i])}” was already configured – ${added.length ? "added the URL template" + (added.length > 1 ? "s " : " ") + added.join(", ") : "no new URL templates"}. Press “Save all” to keep the change.`;
     } else {
-      sites.push({ name: pendingSite.name || "", qid: pendingSite.qid || "", idProperty: pendingSite.idProperty || "", templates: pendingSite.templates || [], match: pendingSite.match || "", category: "" });
+      sites.push({ name: pendingSite.name || "", qid: pendingSite.qid || "", idProperty: pendingSite.idProperty || "", templates: pendingSite.templates || [], match: pendingSite.match || "", category: pendingSite.category || "" });
       i = sites.length - 1;
       note.textContent = `Pre-filled from Wikidata: ${pendingSite.note}. Add a category (and check the template), then press “Save all”.`;
     }
     note.hidden = false; idx = i; renderSelect(); loadEditor();
     $("f_category").focus();
   }
-  const add = pendingSite ? null : new URLSearchParams(location.search).get("add");
+  if (pendingList.length > 1) $("prefillNote").textContent = `${pendingList.length} websites were pre-filled (${pendingList.map(p => p.name || p.qid).join(", ")}). Check the category of each, then press “Save all”.`;
+  const add = pendingList.length ? null : new URLSearchParams(location.search).get("add");
   if (add && !sites.some(s => effectiveMatch({ ...s, templates: s.templates || [] }) === add)) sites.push({ match: add });
-  if (!pendingSite) { idx = add ? sites.length - 1 : (sites.length ? 0 : -1); renderSelect(); if (idx >= 0) loadEditor(); }
+  if (!pendingList.length) { idx = add ? sites.length - 1 : (sites.length ? 0 : -1); renderSelect(); if (idx >= 0) loadEditor(); }
   if (add) $("f_qid").focus();
   const cmds = await chrome.commands.getAll();
   $("shortcut").textContent = cmds.find(c => c.name === "save-source")?.shortcut || "(no shortcut set)";

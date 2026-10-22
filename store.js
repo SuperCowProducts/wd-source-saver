@@ -88,7 +88,7 @@ export function mergeMisses(a, b) {
   for (const [u, v] of Object.entries(b || {})) if (missT(v) > missT(out[u])) out[u] = v;
   return out;
 }
-// patch = {blockedSites?, history?, misses?}. merge: add to what the file has (a run's new records, a newly blocked site – the file may have
+// patch = {sites?, blockedSites?, history?, misses?}. merge: add to what the file has (a run's new records, a newly blocked site – the file may have
 // been extended meanwhile by another computer); without merge the patch REPLACES that part (clearing the log, forgetting an item).
 // Never throws: when the file can't be written the browser copy is flagged as newer ("fileDirty") and Settings says so.
 let pushChain = Promise.resolve();
@@ -101,7 +101,7 @@ export function pushToFile(patch = {}, { merge = false } = {}) {
       const text = await (await link.handle.getFile()).text();
       const cur = text.trim() ? parseDataFile(text) : {};          // an unreadable file throws: it is never overwritten blindly
       const loc = await chrome.storage.local.get(["sites", "settings", "blockedSites", "history", "misses"]);
-      const state = { sites: cur.sites ?? loc.sites ?? [], settings: cur.settings ?? loc.settings };
+      const state = { sites: patch.sites ?? cur.sites ?? loc.sites ?? [], settings: cur.settings ?? loc.settings };      // patch.sites REPLACES the list (the caller built it from the file's own list)
       state.blockedSites = patch.blockedSites ? (merge ? [...new Set([...(cur.blockedSites || []), ...patch.blockedSites])] : patch.blockedSites) : (cur.blockedSites ?? loc.blockedSites);
       state.history = patch.history ? (merge ? mergeHistory(cur.history, patch.history) : patch.history) : (cur.history ?? loc.history);
       state.misses = patch.misses ? (merge ? mergeMisses(cur.misses, patch.misses) : patch.misses) : (cur.misses ?? loc.misses);
@@ -170,5 +170,30 @@ export async function getSettings() {
   let st = (await chrome.storage.local.get("settings")).settings;
   if (!st) st = (await chrome.storage.sync.get("settings")).settings || {};
   return { ...DEFAULTS, ...st };
+}
+// Add websites (e.g. ticked in the review window) WITHOUT opening Settings: they go into the browser copy and straight into the data file.
+// A website that is already there (same Q…) is only completed (name, missing URL templates), never overwritten.
+const normTpl = t => String(t || "").trim().replace(/^P\d+(:\S+)?\s+/i, "").replace(/^[a-z][a-z0-9+.-]*:\/\//i, "").replace(/^www\./i, "").toLowerCase();
+export async function addSites(list) {
+  forgetFileMemo();
+  const sites = (await getSites()).map(x => ({ ...x }));
+  const added = [], completed = [];
+  for (const n of list) {
+    const i = n.qid ? sites.findIndex(x => (x.qid || "").toUpperCase() === n.qid.toUpperCase()) : -1;
+    const tpls = (n.templates || []).map(t => String(t).trim()).filter(Boolean);
+    if (i >= 0) {
+      const x = sites[i], have = new Set((x.templates || []).map(normTpl)), miss = tpls.filter(t => !have.has(normTpl(t)));
+      let ch = false;
+      if (!x.name && n.name) { x.name = n.name; ch = true; }
+      if (miss.length) { x.templates = [...(x.templates || []), ...miss]; ch = true; }
+      if (ch) completed.push(x.name || n.qid);
+    } else {
+      sites.push({ name: n.name || "", qid: n.qid || "", idProperty: "", templates: tpls, match: n.match || "", category: n.category || "", language: String(n.language || "").trim().toLowerCase() });
+      added.push(n.name || n.qid);
+    }
+  }
+  if (!added.length && !completed.length) return { added, completed, file: { linked: false, ok: true } };
+  const file = await saveState({ sites });
+  return { added, completed, file };
 }
 export const saveAll = (sites, settings) => { forgetFileMemo(); return chrome.storage.local.set({ sites, settings }); };

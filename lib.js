@@ -5,6 +5,7 @@ export const DEFAULTS = {
   related: true, redirects: "skip", labelLang: "en", username: "",
   relatedMode: "sites",    // how other sources are found: sites = ask every website of the category (URL guesses + site searches) | google = ONE verbatim Google search per term
   googlePages: 2,          // result pages read in that Google search (about 10 results each)
+  googleKeywords: "",      // helper words added to every Google search, e.g. law -> "public property" law (they steer the results; the page need not contain them)
   confirmTerm: "always",   // ask which term to search for on other websites: always | noid (only when the template has no {id}) | never
   review: "auto",          // auto = ask when more than reviewThreshold new statements or when anything came from a site search
   reviewThreshold: 3,
@@ -505,15 +506,15 @@ export function parseSiteClipboard(text, { allowBareItem = false } = {}) {
   }
   return null;
 }
-// official website (P856)  https://online.hbs.edu/   ->  https://online.hbs.edu/{path}
-export function pathTemplate(v) {
-  try { const u = new URL(String(v).trim()); if (!/^https?:$/.test(u.protocol)) return null; return `${u.origin}${u.pathname.endsWith("/") ? u.pathname : u.pathname + "/"}{path}`; }
-  catch { return null; }
-}
-// formatter URL (P1630)  https://www.investopedia.com/terms/$1.asp  ->  …/terms/{id}.asp
+// formatter URL (P1630), which always holds $1 (Wikidata requires it), -> a URL template. {id} is ONE path segment, {path} several directories; which one is read off the URL:
+//   $1 is the whole first path segment and the last one too (https://www.encyclopedia.com/$1, https://example.org/$1/)  -> {path}: the ID is the page's whole path
+//   anything else (…/terms/$1.asp, …/entry/$1, …/$1/definition, …?id=$1)                                              -> {id}
 export function formatterTemplate(f) {
   const s = String(f || "").trim();
-  return /^https?:\/\//i.test(s) && s.includes("$1") ? s.split("$1").join("{id}") : null;
+  const m = s.match(/^(https?:\/\/[^\/?#]+)(\/[^?#]*)?([?#].*)?$/i);
+  if (!m || !s.includes("$1")) return null;
+  const ph = /^\/\$1\/?$/.test(m[2] || "") ? "{path}" : "{id}";
+  return s.split("$1").join(ph);
 }
 // string values worth using: not deprecated; preferred rank wins over normal
 export function usableValues(claims) {
@@ -677,21 +678,51 @@ export function extractLinks(html, base) {
 }
 
 // ---------- blocked sites ----------
-// "https://www.Example.com/forum/x" -> "example.com" ("" when it can't be a website). A blocked site also blocks its subdomains.
+// The block list holds two kinds of entries:
+//   example.com               a whole website (also blocks www. and subdomains)
+//   youtube.com/@handle       ONE YouTube channel (youtube.com/channel/UC… for channels without a handle); other channels of youtube.com stay allowed
+// A video URL only holds the video ID, so which channel it belongs to is read from YouTube (see ytChannelOf in background.js).
+const YT_CHANNEL = /^(?:(?:www|m|music)\.)?youtube\.com\/(@[^/?#\s]+|channel\/UC[\w-]{20,})/i;
+// "@NASA" / "youtube.com/@NASA/videos" / "https://www.youtube.com/channel/UC…" -> "youtube.com/@nasa" / "youtube.com/channel/UC…" ("" when it is no channel)
+export function youtubeChannelKey(x) {
+  let t = String(x || "").replace(/#.*$/, "").trim().replace(/^[a-z][a-z0-9+.-]*:\/\//i, "");
+  if (/^@[^/?#\s]+$/.test(t)) t = "youtube.com/" + t;                // a bare @handle
+  const m = t.match(YT_CHANNEL);
+  if (!m) return "";
+  let part = m[1];
+  if (part[0] === "@") { try { part = decodeURIComponent(part); } catch { /* keep */ } return "youtube.com/" + part.toLowerCase(); }
+  return "youtube.com/" + part;                                       // channel IDs are case-sensitive
+}
+// "https://www.Example.com/forum/x" -> "example.com"; a YouTube channel URL -> "youtube.com/@handle" ("" when it can't be a website). A blocked site also blocks its subdomains.
 export function normBlockHost(x) {
+  const ch = youtubeChannelKey(x);
+  if (ch) return ch;
   const t = String(x || "").replace(/#.*$/, "").trim().toLowerCase().replace(/^[a-z][a-z0-9+.-]*:\/\//, "").replace(/[/?:].*$/, "").replace(/^www\./, "");
   return /^[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(t) ? t : "";
 }
-// the entry of the block list that covers this URL ("" = not blocked)
+// the entry of the block list that covers this URL ("" = not blocked). A whole-website entry, or - for a YouTube channel/handle URL - that channel's entry.
+// (A youtube.com/watch URL holds no channel: that is checked with blockedChannel once the channel is known.)
 export function blockedHost(list, url) {
   let h = ""; try { h = new URL(url).hostname.toLowerCase().replace(/^www\./, ""); } catch { return ""; }
   for (const b of list || []) if (h === b || h.endsWith("." + b)) return b;
-  return "";
+  const ch = youtubeChannelKey(url);
+  return ch && (list || []).includes(ch) ? ch : "";
 }
+// a channel key (youtube.com/@handle) that is on the list -> that entry, else ""
+export const blockedChannel = (list, key) => (key && (list || []).includes(key)) ? key : "";
+// the video-page URL of YouTube (watch / shorts / live / embed): its channel is not in the URL
+export const isYouTubeVideoUrl = u => { const sc = scraperFor(u); return !!(sc && sc.qualProp === "P1651" && sc.idFromUrl(new URL(u))); };
+// YouTube's oEmbed answer for a video -> channel key. author_url is https://www.youtube.com/@handle (or /channel/UC… for old channels); other shapes (/user/, /c/) can't be matched to a handle -> ""
+export const channelKeyFromAuthorUrl = u => youtubeChannelKey(u);
+export const channelLabel = key => String(key || "").replace(/^youtube\.com\//, "").replace(/^channel\//, "channel ");
 
 // ---------- "one verbatim Google search" mode ----------
-// Google's Verbatim mode (tbs=li:1) searches the words as typed: no synonyms, spelling corrections or dropped words. hl=en keeps the buttons the search script clicks in English.
-export const googleVerbatimUrl = term => `https://www.google.com/search?q=${encodeURIComponent(term)}&tbs=li:1&hl=en`;
+// Google's Verbatim mode (tbs=li:1, the same as Tools > Verbatim) searches the words as typed: no synonyms, spelling corrections or dropped words. The term is also put in double quotes, so it must appear as that exact phrase. hl=en keeps the buttons the search script clicks in English.
+// helper words ("key terms") that give the expression its context: "public property" law -> Google leans to the legal concept instead of real estate.
+// The expression stays verbatim (quoted, and tbs=li:1 below); the key terms are only helpers, a hit need not contain them.
+export const cleanKeywords = k => String(k || "").replace(/[\r\n\t]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 80);
+export const googleQuery = (term, keywords) => { const k = cleanKeywords(keywords); return `"${term}"` + (k ? " " + k : ""); };       // the expression is ALWAYS quoted (an exact phrase), with or without key terms
+export const googleVerbatimUrl = (term, keywords = "") => `https://www.google.com/search?q=${encodeURIComponent(googleQuery(term, keywords))}&tbs=li:1&hl=en`;
 export const googleScript = pages => 'click button "Accept all"\ncollect' + (pages > 1 ? `\npages link "Page {n}" max=${Math.min(5, pages)}` : "");
 const GOOGLE_NOISE = /(^|\.)(google\.[a-z.]+|googleusercontent\.com|gstatic\.com|googleadservices\.com|doubleclick\.net|wikidata\.org|schema\.org)$/i;
 // links read from a Google results page -> [{url, text}]: redirects unwrapped, Google's own links/ads dropped, one entry per page (the longest link text = the title)

@@ -1,4 +1,4 @@
-import { buildCandidates, originsFor, checkUrl, dedupeIds, effectiveMatch, cats, cleanTerm, usable, DEFAULTS, normBlockHost,
+import { buildCandidates, originsFor, checkUrl, dedupeIds, effectiveMatch, cats, cleanTerm, cleanKeywords, usable, DEFAULTS, normBlockHost,
   exportSettingsObject, parseSettingsImport, parseSearchScript, langsOf, KINDS, MEDIAWIKI_EXCLUDE } from "./lib.js";
 import { getSites, getSettings, saveAll, getFileLink, setFileLink, updateFileLink, clearFileLink, readDataFile, writeDataFile, filePermission, saveState, pushToFile } from "./store.js";
 
@@ -151,7 +151,7 @@ function refreshCats() {
 
 // ---------- settings ----------
 const SET_FIELDS = [
-  ["username", "s_username"], ["labelLang", "s_labelLang"], ["review", "s_review"], ["confirmTerm", "s_confirmTerm"], ["relatedMode", "s_relatedMode"], ["googlePages", "s_googlePages", "num"], ["redirects", "s_redirects"],
+  ["username", "s_username"], ["labelLang", "s_labelLang"], ["review", "s_review"], ["confirmTerm", "s_confirmTerm"], ["relatedMode", "s_relatedMode"], ["googlePages", "s_googlePages", "num"], ["googleKeywords", "s_googleKeywords"], ["redirects", "s_redirects"],
   ["reviewThreshold", "s_reviewThreshold", "num"], ["maxPerEdit", "s_maxPerEdit", "num"], ["minEditInterval", "s_minEditInterval", "num"],
   ["maxEditsPerHour", "s_maxEditsPerHour", "num"], ["hostDelayMs", "s_hostDelayMs", "num"], ["maxPerSite", "s_maxPerSite", "num"],
   ["maxTotal", "s_maxTotal", "num"], ["maxlag", "s_maxlag", "num"], ["captchaWaitSeconds", "s_captchaWaitSeconds", "num"], ["scriptMaxClicks", "s_scriptMaxClicks", "num"], ["scriptMaxSeconds", "s_scriptMaxSeconds", "num"], ["missTtlDays", "s_missTtlDays", "num"],
@@ -170,6 +170,7 @@ function collectSettings() {
   }
   o.maxPerEdit = Math.max(1, Math.min(20, o.maxPerEdit));
   o.googlePages = Math.max(1, Math.min(5, Math.round(o.googlePages) || 2));
+  o.googleKeywords = cleanKeywords($("s_googleKeywords").value);
   o.maxlag = Math.max(0, Math.min(60, o.maxlag));
   o.captchaWaitSeconds = Math.max(0, Math.min(900, o.captchaWaitSeconds));
   o.scriptMaxClicks = Math.max(1, Math.min(200, o.scriptMaxClicks));
@@ -187,6 +188,7 @@ $("save").onclick = async () => {
   const clean = sites.map(normalizeSite).filter(s => s.qid || s.idProperty || s.templates.length || s.match || s.searchUrl);
   const origins = originsFor(clean);
   if (collectSettings().relatedMode === "google") origins.push("*://www.google.com/*", "*://google.com/*");   // the verbatim Google search runs in a background tab
+  if ($("blockedSites").value.split(/\r?\n/).some(l => normBlockHost(l).startsWith("youtube.com/"))) origins.push("*://www.youtube.com/*", "*://youtube.com/*");   // blocked YouTube channels: the channel of a video is read from YouTube (oEmbed)
   let granted = true;
   if (origins.length) { try { granted = await chrome.permissions.request({ origins }); } catch (e) { console.error(e); granted = false; } }
   settings = collectSettings();
@@ -581,7 +583,7 @@ for (const [kind, k] of Object.entries(KINDS)) {
       if (!sites[i].name) sites[i].name = pendingSite.name;
       note.textContent = `“${siteLabel(sites[i])}” was already configured – ${added.length ? "added the URL template" + (added.length > 1 ? "s " : " ") + added.join(", ") : "no new URL templates"}. Press “Save all” to keep the change.`;
     } else {
-      sites.push({ name: pendingSite.name || "", qid: pendingSite.qid || "", idProperty: pendingSite.idProperty || "", templates: pendingSite.templates || [], match: pendingSite.match || "", category: pendingSite.category || "" });
+      sites.push({ name: pendingSite.name || "", qid: pendingSite.qid || "", idProperty: pendingSite.idProperty || "", templates: pendingSite.templates || [], match: pendingSite.match || "", category: pendingSite.category || "", language: pendingSite.language || "" });
       i = sites.length - 1;
       note.textContent = `Pre-filled from Wikidata: ${pendingSite.note}. Add a category (and check the template), then press “Save all”.`;
     }

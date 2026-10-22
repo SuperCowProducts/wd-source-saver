@@ -206,14 +206,16 @@ the websites, all settings, the blocked sites, the history log (what was saved /
 ## Configure a website from Wikidata (clipboard)
 Copy an item or property the way Wikidata shows it in its heading and run the extension on a page that isn't configured yet:
 
-* `Harvard Business School Online (Q133732538)` -> a new website with Name + Website item, and (from the item's "official website" P856) the URL template `https://online.hbs.edu/{path}`.
-* `Investopedia term ID (P10715)` (or just `P10715`, or its Property: URL) -> Name + Default ID property, and (from "formatter URL" P1630) the template `https://www.investopedia.com/terms/{id}.asp` (`$1` becomes `{id}`).
+* `Harvard Business School Online (Q133732538)` -> a new website with Name + Website item, and the URL template from the item's "formatter URL" (P1630; not its "official website" P856, which often differs).
+* `Investopedia term ID (P10715)` (or just `P10715`, or its Property: URL) -> Name + Default ID property, and the URL template from its "formatter URL" (P1630).
 
+The formatter's `$1` (Wikidata requires it) becomes `{id}` or `{path}`, decided from the URL: `https://www.investopedia.com/terms/$1.asp` -> `.../terms/{id}.asp`; when `$1` is the whole first path segment and the last one too
+(`https://www.encyclopedia.com/$1`, `https://example.org/$1/`) it becomes `{path}`, since such IDs are usually several directories. Check it before saving; if the property's values contain slashes in other layouts
+(e.g. `f/financial-statements`), edit the template to `{path}` or use a value pattern.
 Settings opens with the website filled in but NOT saved: add a category, check the template, press "Save all". If the website is already configured, only the missing templates are added.
 Without a URL on Wikidata the Match field is filled from the page you are on. Preferred-rank values win; deprecated ones are ignored; at most three URLs are used.
 A bare `Q123` on an unknown page is still treated as the item to save on (settings open with just the host). To pre-fill from a bare item (or from any page, known or not) use the
 "configure a website" shortcut (Alt+Shift+C). "Label (Q123)" pasted from a heading also works as the item to save on, on configured pages.
-Note: the formatter's `$1` becomes the single-segment `{id}`; if the property's values contain slashes (e.g. `f/financial-statements`), edit the template to `{path}` or use a value pattern.
 
 ## IDs that are inside the page, not in the URL
 Some websites put the slug in the URL but keep the real ID in the page (e.g. `…/dictionary/automobile_adj`, ID `8269459060` inside). Settings -> website -> Advanced ->
@@ -243,16 +245,22 @@ press Enter to accept. **Skip** (or Esc) saves the page without searching other 
 * Asked only when other websites would actually be searched (related websites on, the page has a category, not a "save this page only" run).
 * The text-fragment feature is unchanged: with it enabled, the selected text is still added to the saved URL as `#:~:text=…`.
 
+**Starting another run while a review window is open.** A review window waits for you as long as you like, and it no longer blocks the extension: while it is open the toolbar icon shows an orange `REV` badge, and clicking the icon (or the save shortcut) on another page starts a separate run that reads and writes to Wikidata on its own. When you answer the first window, that run continues once the other one has finished or is itself waiting on a review window; before saving it re-checks the item, so nothing is written twice. Stop (icon or shortcut) cancels only the run that is working, or - when nothing is working - closes the waiting windows.
+
 ## Finding other sources with ONE verbatim Google search
 Settings -> **Finding other sources**: `ask every website of the category` (default: URL guesses + each website's own search) or
 `one verbatim Google search per term`. In Google mode no website is asked one by one: for each term (the confirmed page term and up to two terms typed on the clipboard)
 a background tab opens Google's **Verbatim** search (`tbs=li:1`: no synonyms, no spelling "corrections", no dropped words), accepts the cookie banner and reads
 **Google result pages to read** pages (1-5, about 10 results each). Press "Save all" once after switching, so the extension may open google.com.
+
+**Permissions for the search.** Every website the extension reads needs a one-time permission from Chrome (also lost when the extension is reinstalled from another folder, which gives it a new ID). If some are missing, the term question says so and Chrome asks for them when you press "Search other websites". Without them each check fails with "no permission" in the run log and the run looks exactly like "Skip".
+
+**Key terms.** A phrase alone is often ambiguous (`"public property"` mostly finds real estate). Settings → *Key terms added to the Google search* (e.g. `law`) turns every query into `"public property" law`: the expression is still searched verbatim (in quotes, with Google's Verbatim mode), the key terms are only helpers that steer Google to the right context, and a hit does not have to contain them. When the term is confirmed in the question window (Google mode), a second box shows the key terms for this search only, starting from the setting; empty it for a plain search. Without key terms the query is just `"public property"`: the expression is always in double quotes (an exact phrase) and the search always runs in Google's Verbatim mode (the same as Tools → Verbatim).
 Every result page then lands in the review window (which always opens in this mode):
 * a result from **a website you have configured**, in the page's category -> **ticked** (its ID is read with that website's templates, like any other result);
 * a result from a website you have configured but in **another category** -> listed, **not ticked**;
-* a result from **a website that is not in your settings** -> listed, **not ticked**. Tick it and type the **website item** (Q...) of the site/publisher - Save stays disabled until you have.
-  "Also add this website to Settings" (on by default) opens Settings afterwards with it pre-filled (name, Q, domain, the page's category); press "Save all" there and the website is ticked automatically next time.
+* a result from **a website that is not in your settings** -> listed, **not ticked**. Tick it and type the **website item** (Q...) of the site/publisher - Save stays disabled until you have. Every URL in the window has a **goes to:** box, including the ones listed under "already on the item" (unticked; typing an item there ticks the row and saves it on that item instead, unless it is there already; the buttons for all rows leave them alone, "ticked rows" includes them). Such a new-website row also has a **goes to:** box like every other row (and is included by the "send to another item/lexeme" buttons at the top), so a new website's hit can be saved on a different item or lexeme: type the website's Q in *website item* and the other item's Q in *goes to*. As you type, the item's English label appears next to the box (a red warning if the ID has no label or does not exist), so a wrong ID is easy to spot.
+  "Also add this website to Settings" (on by default): the website is saved right away (browser copy AND, when one is connected, the data file - no "Save all" needed, also when a later Wikidata edit fails; a website already there is only completed) with: name and URL template (read from the website item's label and formatter URL, P1630; the domain is used when it has none), Q, and a category and language. Category and language start as those of the website you are on and can be overridden per row in the window (`category:` / `language:` boxes, active while the tick is on). It is ticked automatically next time. Open Settings and press "Save all" once if searches on its domain need Chrome's permission.
 The Google link text is shown under each row to help you decide. Google's own links, ads and wikidata.org are ignored; at most 30 unknown-website results are listed.
 A Google CAPTCHA stops the search and shows the usual notification (solve it in a normal tab). The other options (confirming the term, the per-edit limit and its exception, text fragments) work as before.
 
@@ -263,6 +271,14 @@ Settings -> **Blocked sites** is the same list as plain text (one site per line,
 A blocked site is left out *before* anything is requested or shown (URL guesses, site searches, Google hits, redirects that end up there). The page you are on is never blocked.
 You are still told: the review window shows "Left out because of your block list: example.com (3)", the run report lists every left-out page (`⛔ blocked site …`), and the notification
 says how many results were left out and from which sites (and which sites you just blocked). The list is part of the data file (and of the browser copy).
+
+### Blocking a YouTube channel (not youtube.com)
+A YouTube video URL holds only the video ID, so on a YouTube video row the review window offers **block channel @handle** instead of "block youtube.com". The channel is read from YouTube's oEmbed
+answer for that video (one small request per video, paced like every other request; the page you are on already gave its handle). The list then holds `youtube.com/@handle` (or `youtube.com/channel/UC…`
+for channels without a handle); you can also type these in Settings → Blocked sites, as `youtube.com/@NASA`, a pasted channel URL, or just `@NASA`.
+* A blocked channel's videos are left out of Google hits and site searches *before* they are shown; other channels and the rest of youtube.com are untouched. A channel page URL (`youtube.com/@handle/...`) is matched without any request.
+* Chrome needs permission for youtube.com to read the channel: it is asked together with google.com in the term question (Google mode), and by "Save all" whenever the block list holds a channel. If a channel can't be read (private/removed video, legacy `/user/` channel, no permission) the row has no block button, and the run report says so.
+* As with sites, the page you are on is never blocked. `youtube.com` alone can still be blocked by typing it in Settings.
 
 ## No review timeout
 The review window (and the term and Wikidata-lag questions) wait for you as long as you like, like an open document: no timer closes them. They end when you submit, cancel, close the window, or press Stop (which also closes them).

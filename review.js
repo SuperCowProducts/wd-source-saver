@@ -45,6 +45,28 @@ async function labelOf(t, into) {
   into.textContent = labels.get(t);
 }
 
+// the website item typed on a row from an unknown website: show its name next to the box, so a wrong Q… is obvious
+const qLabelCache = new Map();                                    // Q… -> name (only real answers are kept)
+function watchWebsiteItem(qi, out) {
+  let seq = 0, timer = 0;
+  const show = (text, color, title) => { out.textContent = text; out.style.color = color || ""; out.title = title || text; };
+  const run = async () => {
+    const my = ++seq, v = qi.value.trim();
+    if (!v) { show(""); return; }
+    const q = qOk(v) ? normId(v) : null;
+    if (!q) { show(""); return; }                                 // the red field border already says it is not a Q…
+    if (qLabelCache.has(q)) { show("= " + qLabelCache.get(q)); return; }
+    show("looking up " + q + "…");
+    let name = null;
+    try { name = (await chrome.runtime.sendMessage({ type: "entity-label", id: q })) || ""; } catch { name = null; }
+    if (my !== seq) return;                                       // the box changed while we were asking
+    if (name === null) show("could not look up " + q, "#c62828");
+    else if (!name) show("⚠ " + q + " has no label (or does not exist) – double-check the ID", "#c62828");
+    else { qLabelCache.set(q, name); show("= " + name); }
+  };
+  qi.addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(run, 250); });
+  qi.addEventListener("change", () => { clearTimeout(timer); run(); });
+}
 const blockedHosts = new Set();                                    // sites blocked in this window (saved to the block list when it closes)
 const hostOf = u => { try { return new URL(u).hostname.toLowerCase().replace(/^www\./, ""); } catch { return ""; } };
 function setBlocked(host, on) {                                    // block/unblock every row of that site: unticked, greyed out, can't be ticked
@@ -55,17 +77,34 @@ function setBlocked(host, on) {                                    // block/unbl
     if (on) { row.dataset.was = cb.checked ? "1" : ""; cb.checked = false; cb.disabled = true; }
     else { cb.disabled = false; cb.checked = row.dataset.was === "1"; }
     row.classList.toggle("blocked", on);
-    btn.textContent = on ? `blocked – undo (${host})` : `block ${host}`;
+    btn.textContent = on ? `blocked – undo (${btn.dataset.label})` : `block ${btn.dataset.label}`;
   }
   update();
 }
-function blockButton(row, host) {
-  const b = document.createElement("button"); b.className = "bblk"; b.textContent = `block ${host}`; b.type = "button";
-  b.title = "Never show results from this site again (the list is in Settings → Blocked sites)";
-  b.onclick = () => setBlocked(host, !blockedHosts.has(host));
-  row.dataset.host = host;
+// What a row can block: a YouTube VIDEO blocks its CHANNEL (youtube.com/@handle - youtube.com itself and other channels stay allowed; the video URL does not
+// hold the channel, so the background script read it from YouTube); every other URL blocks its website. null = a video whose channel could not be read.
+function blockTarget(r) {
+  if (r.yt) return r.channel ? { key: r.channel.key, label: "channel " + r.channel.label, channel: true } : null;
+  const h = hostOf(r.url);
+  return h ? { key: h, label: h } : null;
+}
+function blockButton(row, t) {
+  const b = document.createElement("button"); b.className = "bblk"; b.textContent = `block ${t.label}`; b.type = "button"; b.dataset.label = t.label;
+  b.title = t.channel ? "Never show videos of this YouTube channel again - other channels (and youtube.com) stay allowed (the list is in Settings → Blocked sites)"
+                      : "Never show results from this site again (the list is in Settings → Blocked sites)";
+  b.onclick = () => setBlocked(t.key, !blockedHosts.has(t.key));
+  row.dataset.host = t.key;
   return b;
 }
+// the block button of a row, or - for a YouTube video whose channel is unknown - a note instead (blocking youtube.com would be far too much)
+function blockControl(d, r) {
+  const t = blockTarget(r);
+  if (t) return blockButton(d, t);
+  if (!r.yt) return null;
+  const n = document.createElement("span"); n.className = "lbl"; n.textContent = "channel unknown – can't block it (see the run report)";
+  return n;
+}
+const metaInputs = new Map();                                      // rows from unknown websites: category + language boxes (used when the website is added to Settings)
 const qInputs = new Map(), rememberBoxes = new Map();            // rows from websites that are not in the settings: the website item typed, "add to Settings" box
 const qOk = v => /^(?:https?:\/\/(?:www\.|m\.)?wikidata\.org\/(?:wiki|entity)\/)?Q\d+\/?$/i.test(String(v).trim());
 let overNow = false;                                      // is some target above the per-edit limit right now?
@@ -140,7 +179,8 @@ function setTarget(id, v) {
   else { inp.classList.remove("bad"); targets.set(id, val || ""); inp.value = val || ""; if (val) addKnown(val); }
   const row = inp.closest(".row");
   row.classList.toggle("moved", !!targets.get(id));
-  labelOf(targets.get(id), row.querySelector(".lbl"));
+  if (rowsById().get(id)?.present) { const pc = row.querySelector("input[type=checkbox][data-id]"); if (pc) pc.checked = !!targets.get(id); }   // already on this item: it only matters when it goes elsewhere
+  labelOf(targets.get(id), row.querySelector(".tlbl"));
   refreshBrushButtons();
 }
 function refreshBrushButtons() {
@@ -164,7 +204,7 @@ function refreshBrushButtons() {
     const m = document.createElement("label");
     m.className = "main";
     const cb = document.createElement("input");
-    cb.type = "checkbox"; cb.checked = !r.needsApproval && !r.manual; cb.dataset.id = r.id; cb.onchange = update;
+    cb.type = "checkbox"; cb.checked = !r.needsApproval && !r.manual && !r.present; cb.dataset.id = r.id; cb.onchange = update;
     const b = document.createElement("div");
     const h = document.createElement("div");
     h.textContent = r.label + " – " + r.note;
@@ -180,16 +220,37 @@ function refreshBrushButtons() {
     b.append(h, u);
     if (r.gtext) { const g = document.createElement("div"); g.className = "t"; g.textContent = "Google: " + r.gtext; b.append(g); }
     m.append(cb, b);
-    if (r.unknown) {                                                      // not one of your websites: needs the website item; no target / URL editing
+    if (r.unknown) {                                                      // not one of your websites: needs the website item (and may go to another item/lexeme); no URL editing
       const tq = document.createElement("div"); tq.className = "tr";
       const qi = document.createElement("input"); qi.placeholder = "Q… of the website/publisher"; qi.autocomplete = "off"; qi.spellcheck = false; qi.style.width = "min(100%,240px)";
       qi.oninput = update;
+      const qname = document.createElement("span"); qname.className = "lbl"; qname.style.maxWidth = "min(100%,360px)"; qname.style.fontWeight = "600";
+      watchWebsiteItem(qi, qname);
       const rb = document.createElement("input"); rb.type = "checkbox"; rb.checked = true; rb.style.width = "auto";
       const rl = document.createElement("label"); rl.append(rb, " also add this website to Settings (ticked automatically next time)"); rl.style.marginLeft = "8px";
-      tq.append("website item:", qi, rl);
-      if (hostOf(r.url)) tq.append(blockButton(d, hostOf(r.url)));
+      // category and language of the website to be added to Settings: start from the current website's, overridable per row
+      const mkMeta = (ph, val, w, title) => { const i = document.createElement("input"); i.placeholder = ph; i.value = val || ""; i.title = title; i.autocomplete = "off"; i.spellcheck = false; i.style.width = w; return i; };
+      const ci = mkMeta("category", payload.siteDefaults?.category, "110px", "Category of the new website (as in Settings; empty = none yet)");
+      const li = mkMeta("en, it", payload.siteDefaults?.language, "70px", "Languages of the new website (empty = every language)");
+      const meta = document.createElement("span"); meta.style.cssText = "display:inline-flex;gap:6px;align-items:center;margin-left:8px";
+      meta.append("category:", ci, "language:", li);
+      rb.onchange = () => { meta.style.opacity = rb.checked ? "" : ".45"; ci.disabled = li.disabled = !rb.checked; };
+      metaInputs.set(r.id, { ci, li });
+      tq.append("website item:", qi, qname, rl, meta);
+      { const bc = blockControl(d, r); if (bc) tq.append(bc); }
       qInputs.set(r.id, qi); rememberBoxes.set(r.id, rb); targets.set(r.id, "");
-      d.append(m, tq); $("rows").append(d); continue;
+      // a new website can go to another item/lexeme as well: website item above, target here (empty = the item at the top)
+      const tr2 = document.createElement("div"); tr2.className = "tr";
+      const inp2 = document.createElement("input");
+      inp2.setAttribute("list", "targets"); inp2.placeholder = payload.item; inp2.autocomplete = "off"; inp2.spellcheck = false;
+      inp2.onchange = () => { setTarget(r.id, inp2.value); update(); };
+      inp2.oninput = () => inp2.classList.remove("bad");
+      const go2 = document.createElement("button"); go2.className = "go"; go2.hidden = true; go2.title = "Send this row to the target in the bar at the top";
+      go2.onclick = () => { setTarget(r.id, $("bt").value); update(); };
+      const lbl2 = document.createElement("span"); lbl2.className = "lbl tlbl";
+      tr2.append("goes to:", inp2, go2, lbl2);
+      inputs.set(r.id, inp2);
+      d.append(m, tq, tr2); $("rows").append(d); continue;
     }
     // where this row goes: empty = the item above
     const tr = document.createElement("div");
@@ -200,23 +261,25 @@ function refreshBrushButtons() {
     inp.oninput = () => inp.classList.remove("bad");
     const go = document.createElement("button"); go.className = "go"; go.hidden = true; go.title = "Send this row to the target in the bar at the top";
     go.onclick = () => { setTarget(r.id, $("bt").value); update(); };
-    const lbl = document.createElement("span"); lbl.className = "lbl";
+    const lbl = document.createElement("span"); lbl.className = "lbl tlbl";
     tr.append("goes to:", inp, go, lbl);
     let ed = null;
-    if (r.url) {
+    if (r.url && !r.present) {
       ed = urlEditor(r, u);
       const eb = document.createElement("button"); eb.textContent = "edit URL"; eb.title = "Correct the address before saving";
       eb.onclick = ed.open; tr.append(eb);
     }
-    if (hostOf(r.url)) tr.append(blockButton(d, hostOf(r.url)));
+    { const bc = blockControl(d, r); if (bc) tr.append(bc); }
     inputs.set(r.id, inp); targets.set(r.id, "");
-    d.append(m, tr); if (ed) d.append(ed.wrap); $("rows").append(d);
+    d.append(m, tr); if (ed) d.append(ed.wrap); (r.present ? $("presl") : $("rows")).append(d);
   }
   if (payload.blockedInfo?.length) {                                    // the block list already kept these out of this window
     $("blk").hidden = false;
     $("blk").textContent = "⛔ Left out because of your block list: " + payload.blockedInfo.map(([h, n]) => `${h} (${n})`).join(", ") + " – edit the list in Settings → Blocked sites.";
   }
-  if (payload.present.length) {
+  const nPres = payload.rows.filter(r => r.present).length;
+  if (nPres) $("pres").querySelector("summary").textContent = `${nPres} already on the item – you can still send them to another item`;
+  else if (payload.present.length) {
     $("pres").querySelector("summary").textContent = `${payload.present.length} already on the item`;
     for (const line of payload.present) { const d = document.createElement("div"); linkify(line, d); $("presl").append(d); }
   } else $("pres").hidden = true;
@@ -226,14 +289,14 @@ function refreshBrushButtons() {
     if (!t) { $("bt").classList.add("bad"); return; }
     $("bt").classList.remove("bad");
     const sel = new Set(ticked().map(c => Number(c.dataset.id)));
-    for (const r of payload.rows) if (!r.unknown && (!only || sel.has(r.id))) setTarget(r.id, t);
+    for (const r of payload.rows) if (only ? sel.has(r.id) : !r.present) setTarget(r.id, t);
     addKnown(t); update();
   };
   $("bt").oninput = () => { $("bt").classList.remove("bad"); refreshBrushButtons(); };
   $("bt").onchange = () => { const t = normId($("bt").value); if ($("bt").value && !t) $("bt").classList.add("bad"); else { if (t) { $("bt").value = t; addKnown(t); } labelOf(t, $("bl")); } refreshBrushButtons(); };
   $("bticked").onclick = () => applyBulk(true);
   $("ball").onclick = () => applyBulk(false);
-  $("breset").onclick = () => { for (const r of payload.rows) if (!r.unknown) setTarget(r.id, ""); update(); };
+  $("breset").onclick = () => { for (const r of payload.rows) setTarget(r.id, ""); update(); };
   update();
   $("ok").focus();
 })();
@@ -247,7 +310,9 @@ $("ok").onclick = () => {
   for (const id of selected) if (urlEdits.has(id)) urls[id] = urlEdits.get(id);
   const qids = {}, remember = [];
   for (const sid of selected) { const qi = qInputs.get(sid); if (qi) { qids[sid] = qi.value.trim(); if (rememberBoxes.get(sid)?.checked) remember.push(sid); } }
-  chrome.runtime.sendMessage({ type: "review-done", id, selected, targets: out, urls, exception: overNow && $("exc").checked, qids, remember, blocked: [...blockedHosts] });
+  const meta = {};
+  for (const sid of remember) { const m = metaInputs.get(sid); if (m) meta[sid] = { category: m.ci.value.trim(), language: m.li.value.trim() }; }
+  chrome.runtime.sendMessage({ type: "review-done", id, selected, targets: out, urls, exception: overNow && $("exc").checked, qids, remember, meta, blocked: [...blockedHosts] });
 };
 $("cancel").onclick = () => chrome.runtime.sendMessage({ type: "review-done", id, cancel: true, blocked: [...blockedHosts] });
 addEventListener("keydown", e => { if (e.key === "Escape" && document.activeElement?.tagName !== "INPUT") $("cancel").click(); });

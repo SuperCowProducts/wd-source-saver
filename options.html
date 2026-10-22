@@ -151,8 +151,8 @@ Wikidata labels and aliases are never used – only the page's own ID and the ex
 
 <h2>Blocked sites</h2>
 <div class="card">
-  <p class="hint" style="margin-top:0">Results from these sites are never offered: no request is made to them and they don't appear in the review window. One site per line (<code>example.com</code> also blocks its subdomains; a pasted URL is reduced to its site; <code>#</code> starts a comment).
-  Add sites with the <b>block</b> button in the review window. When something is left out because of this list, the run report and notification say so.
+  <p class="hint" style="margin-top:0">Results from these sites are never offered: no request is made to them and they don't appear in the review window. One entry per line: a site (<code>example.com</code> also blocks its subdomains; a pasted URL is reduced to its site) or a single YouTube channel (<code>youtube.com/@NASA</code> or just <code>@NASA</code>; <code>youtube.com/channel/UC…</code> for channels without a handle) - the rest of youtube.com stays allowed. <code>#</code> starts a comment.
+  Add them with the <b>block</b> button in the review window (on a YouTube video it blocks that video's <b>channel</b>, not youtube.com). When something is left out because of this list, the run report and notification say so.
   This list is part of the data file below, so it is restored with everything else.</p>
   <textarea id="blockedSites" rows="5" spellcheck="false" placeholder="example.com"></textarea>
 </div>
@@ -176,6 +176,7 @@ Wikidata labels and aliases are never used – only the page's own ID and the ex
     <label>Label language<input id="s_labelLang" placeholder="en"></label>
     <label>Finding other sources<select id="s_relatedMode"><option value="sites">ask every website of the category (URL guesses + site searches)</option><option value="google">one verbatim Google search per term – hits from my websites are ticked, others I tick myself</option></select></label>
     <label>Google result pages to read (Google mode)<input type="number" id="s_googlePages" min="1" max="5"></label>
+    <label>Key terms added to the Google search (Google mode) <span class="hint">(e.g. <code>law</code> → <code>"public property" law</code>. They only steer Google towards the right context; the expression stays verbatim and hits need not contain them. Can be changed per search in the term question)</span><input id="s_googleKeywords" placeholder="law" maxlength="80" autocomplete="off" spellcheck="false"></label>
     <label>Confirm the search term<select id="s_confirmTerm"><option value="always">always (before searching other websites)</option><option value="noid">only when the URL template has no {id}</option><option value="never">never – use the URL's words</option></select></label>
     <label>Review window<select id="s_review"><option value="auto">only for many changes or site-search results</option><option value="always">always</option><option value="never">never</option></select></label>
   </div>

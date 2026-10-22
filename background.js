@@ -485,13 +485,27 @@ const normEntity = v => {
 async function fetchYtChannel(url, signal) {
   try {
     const res = await hostFetch("https://www.youtube.com/oembed?format=json&url=" + encodeURIComponent(url), { credentials: "omit", timeoutMs: 10000, signal });
-    if (!res.ok) { res.body?.cancel(); return { why: `HTTP ${res.status}` }; }
-    const j = await res.json();
-    const key = channelKeyFromAuthorUrl(j?.author_url || "");
-    return key ? { key, label: channelLabel(key), name: String(j.author_name || "") } : { why: `author_url ${j?.author_url || "(none)"} holds no @handle or channel ID` };
+    if (res.ok) {
+      const j = await res.json();
+      const key = channelKeyFromAuthorUrl(j?.author_url || "");
+      if (key) return { key, label: channelLabel(key), name: String(j.author_name || "") };
+    } else res.body?.cancel();
   } catch (e) {
     if (signal?.aborted) throw e;
-    return { why: e.blocked ? "youtube.com rate-limited/blocking" : (e.message || "network error") };
+    if (e.blocked) return { why: "youtube.com rate-limited/blocking" };
+  }
+  // oEmbed failed (embedding disabled, no CORS/permission…): read the channel from the video page itself, like the page you are on
+  try {
+    const res = await hostFetch(url, { credentials: "omit", timeoutMs: 15000, signal });
+    if (!res.ok) { res.body?.cancel(); return { why: `oEmbed failed, video page answered HTTP ${res.status}` }; }
+    const html = (await res.text()).slice(0, 3e6);
+    const m = html.match(/"ownerProfileUrl":"[^"]*?\/(@[^"\\/]+)"/) || html.match(/<link[^>]+itemprop="url"[^>]+href="[^"]*?\/(@[^"\/]+)"/) ||
+              html.match(/"canonicalBaseUrl":"\/(@[^"\\/]+)"/) || html.match(/"channelId":"(UC[\w-]{20,})"/);
+    const key = m ? youtubeChannelKey(m[1][0] === "@" ? m[1] : "youtube.com/channel/" + m[1]) : "";
+    return key ? { key, label: channelLabel(key), name: "" } : { why: "neither oEmbed nor the video page named the channel" };
+  } catch (e) {
+    if (signal?.aborted) throw e;
+    return { why: e.blocked ? "youtube.com rate-limited/blocking" : (e.message || "network error") + " (is youtube.com allowed? Settings → Save all)" };
   }
 }
 
@@ -1136,8 +1150,8 @@ async function runInner(tab, only, s, signal, configure = false) {
   const blockedHits = new Map();                                       // blocked site -> the pages that were left out because of it
   const blockedBy = url => blockedHost(blockedList, url);
   const chanBlocked = async (u, sig) => {                              // a YouTube video whose CHANNEL is on the block list (youtube.com itself stays allowed)
-    if (!blockedList.some(b => b.startsWith("youtube.com/")) || !isYouTubeVideoUrl(u)) return "";
-    const ch = await ytChannelOf(u, sig);
+    if (!isYouTubeVideoUrl(u)) return "";
+    const ch = await ytChannelOf(u, sig);           // always read (cached): the review window needs the channel for its "block channel" button, not only for filtering
     return ch ? blockedChannel(blockedList, ch.key) : "";
   };
   const noteBlocked = (b, url) => { if (!blockedHits.has(b)) blockedHits.set(b, []); const a = blockedHits.get(b); if (!a.includes(url)) a.push(url); };
@@ -1274,7 +1288,9 @@ async function runInner(tab, only, s, signal, configure = false) {
     await saveHistory(history, misses);
   }
   signal.throwIfAborted();
-  if (chanFailed.length) skipped.push({ label: "YouTube channels", url: "", reason: `the channel of ${chanFailed.length} video${chanFailed.length > 1 ? "s" : ""} could not be read, so ${chanFailed.length > 1 ? "they were" : "it was"} not checked against blocked channels and has no “block channel” button: ${chanFailed.slice(0, 3).join("; ")}${chanFailed.length > 3 ? "; …" : ""} (allow youtube.com in Settings if permission is the reason)` });
+  let chanReported = 0;
+  const reportChan = () => { if (chanFailed.length > chanReported) { chanReported = chanFailed.length; skipped.push({ label: "YouTube channels", url: "", reason: `the channel of ${chanFailed.length} video${chanFailed.length > 1 ? "s" : ""} could not be read, so ${chanFailed.length > 1 ? "they have" : "it has"} no “block channel” button and ${chanFailed.length > 1 ? "were" : "was"} not checked against blocked channels: ${chanFailed.slice(0, 3).join("; ")}${chanFailed.length > 3 ? "; …" : ""}` }); } };
+  reportChan();
 
   // --- compare with the item ---
   let plan = [];
@@ -1294,6 +1310,9 @@ async function runInner(tab, only, s, signal, configure = false) {
     (s.review === "auto" && (fresh.length > Math.min(s.reviewThreshold, s.maxPerEdit) || fresh.some(p => p.entry.viaSearch))));   // also when the per-edit limit would strike: the window can make an exception
   let reviewMs = 0;                                                    // how long the window was open
   if (needReview) {
+    setStage("reading the YouTube channels for the block buttons…");
+    for (const u of [...fresh, ...present].map(p => p.entry.url).concat([...unknownRows.values()].map(x => x.url))) if (isYouTubeVideoUrl(u) && !chanFor(u)) await ytChannelOf(u, signal);
+    reportChan();
     setStage("waiting for your review…");
     const tAsk = Date.now();
     const sel = await askReview({

@@ -105,8 +105,16 @@ function blockControl(d, r) {
   return n;
 }
 const metaInputs = new Map();                                      // rows from unknown websites: category + language boxes (used when the website is added to Settings)
+const wInputs = new Map();                                       // rows saved as P1343 (website item): id -> box to OVERRIDE the website item saved in Settings
 const qInputs = new Map(), rememberBoxes = new Map();            // rows from websites that are not in the settings: the website item typed, "add to Settings" box
 const qOk = v => /^(?:https?:\/\/(?:www\.|m\.)?wikidata\.org\/(?:wiki|entity)\/)?Q\d+\/?$/i.test(String(v).trim());
+// the website item typed on a row to replace the saved one ("" = keep the saved item, or the box does not hold a valid Q…)
+const ovOf = id => {
+  const wi = wInputs.get(id), r = rowsById().get(id), v = wi ? wi.value.trim() : "";
+  if (!v || !qOk(v)) return "";
+  const q = normId(v);
+  return q && q !== String(r?.siteq || "").toUpperCase() ? q : "";
+};
 let overNow = false;                                      // is some target above the per-edit limit right now?
 function update() {
   const checked = ticked();
@@ -116,7 +124,8 @@ function update() {
   const per = new Map();                                 // target -> Map(statement key -> count)
   for (const c of checked) {
     const id = Number(c.dataset.id), r = rows.get(id), T = tOf(id);
-    const k = T === payload.item ? (r?.gkey ?? c.dataset.id) : (r?.siteq ? "g:" + r.siteq : "n:" + id);
+    const ov = ovOf(id);                                 // another website item = another P1343 statement (rows with the same item share one)
+    const k = ov ? "o:" + ov : T === payload.item ? (r?.gkey ?? c.dataset.id) : (r?.siteq ? "g:" + r.siteq : "n:" + id);
     if (!per.has(T)) per.set(T, new Map());
     per.get(T).set(k, (per.get(T).get(k) || 0) + 1);
   }
@@ -126,6 +135,7 @@ function update() {
     const v = qi.value.trim(); qi.classList.toggle("bad", !!v && !qOk(v));
     if (!qOk(v)) needQ = true;
   }
+  for (const [, wi] of wInputs) { const v = wi.value.trim(); wi.classList.toggle("bad", !!v && !qOk(v)); }
   const bad = !!document.querySelector("input.bad");
   const overT = [...per.entries()].find(([, m]) => [...m.values()].reduce((a, b) => a + b, 0) > payload.maxPerEdit);
   const exception = $("exc").checked;
@@ -226,8 +236,10 @@ function refreshBrushButtons() {
       qi.oninput = update;
       const qname = document.createElement("span"); qname.className = "lbl"; qname.style.maxWidth = "min(100%,360px)"; qname.style.fontWeight = "600";
       watchWebsiteItem(qi, qname);
-      const rb = document.createElement("input"); rb.type = "checkbox"; rb.checked = true; rb.style.width = "auto";
-      const rl = document.createElement("label"); rl.append(rb, " also add this website to Settings (ticked automatically next time)"); rl.style.marginLeft = "8px";
+      const rb = document.createElement("input"); rb.type = "checkbox"; rb.checked = !r.ytSite; rb.style.width = "auto";
+      const rl = document.createElement("label"); rl.style.marginLeft = "8px";
+      if (r.ytSite) { rb.disabled = true; rl.textContent = "(YouTube: not added to Settings – a website with the domain youtube.com would take over every YouTube link)"; rl.className = "lbl"; }
+      else rl.append(rb, " also add this website to Settings (ticked automatically next time)");
       // category and language of the website to be added to Settings: start from the current website's, overridable per row
       const mkMeta = (ph, val, w, title) => { const i = document.createElement("input"); i.placeholder = ph; i.value = val || ""; i.title = title; i.autocomplete = "off"; i.spellcheck = false; i.style.width = w; return i; };
       const ci = mkMeta("category", payload.siteDefaults?.category, "110px", "Category of the new website (as in Settings; empty = none yet)");
@@ -235,6 +247,7 @@ function refreshBrushButtons() {
       const meta = document.createElement("span"); meta.style.cssText = "display:inline-flex;gap:6px;align-items:center;margin-left:8px";
       meta.append("category:", ci, "language:", li);
       rb.onchange = () => { meta.style.opacity = rb.checked ? "" : ".45"; ci.disabled = li.disabled = !rb.checked; };
+      if (r.ytSite) { meta.style.display = "none"; ci.disabled = li.disabled = true; }
       metaInputs.set(r.id, { ci, li });
       tq.append("website item:", qi, qname, rl, meta);
       { const bc = blockControl(d, r); if (bc) tq.append(bc); }
@@ -271,7 +284,24 @@ function refreshBrushButtons() {
     }
     { const bc = blockControl(d, r); if (bc) tr.append(bc); }
     inputs.set(r.id, inp); targets.set(r.id, "");
-    d.append(m, tr); if (ed) d.append(ed.wrap); (r.present ? $("presl") : $("rows")).append(d);
+    let wr = null;
+    if (r.siteq) {                                                        // saved as P1343 + P2699 (or P1651): the website item may be overridden here, e.g. an item for one AREA of the website
+      wr = document.createElement("div"); wr.className = "tr";
+      const wi = document.createElement("input"); wi.placeholder = r.siteq; wi.autocomplete = "off"; wi.spellcheck = false; wi.style.width = "110px";
+      wi.title = "Empty = the website item saved in Settings (" + r.siteq + "). Type another Q… to save this row under that item instead (e.g. one that is more specific: an area of the website).";
+      const wdef = document.createElement("span"); wdef.className = "lbl"; wdef.style.maxWidth = "min(100%,200px)"; labelOf(r.siteq, wdef);
+      const wname = document.createElement("span"); wname.className = "lbl"; wname.style.cssText = "max-width:min(100%,300px);font-weight:600";
+      watchWebsiteItem(wi, wname);
+      wi.oninput = wi.onchange = () => {                                 // a row that was "already there" becomes new under another website item: tick it for you
+        if (r.present) { const pc = d.querySelector("input[type=checkbox][data-id]"); if (pc) pc.checked = !!ovOf(r.id) || !!targets.get(r.id); }
+        update();
+      };
+      const all = document.createElement("button"); all.type = "button"; all.textContent = "same for all rows of this website"; all.title = "Copy this website item to every row that currently uses " + r.siteq;
+      all.onclick = () => { for (const [id2, w2] of wInputs) if (rowsById().get(id2)?.siteq === r.siteq) w2.value = wi.value; update(); };
+      wr.append("website item:", wi, wname, "(saved in Settings: " + r.siteq, wdef, ")", all);
+      wInputs.set(r.id, wi);
+    }
+    d.append(m, tr); if (wr) d.append(wr); if (ed) d.append(ed.wrap); (r.present ? $("presl") : $("rows")).append(d);
   }
   if (payload.blockedInfo?.length) {                                    // the block list already kept these out of this window
     $("blk").hidden = false;
@@ -310,9 +340,11 @@ $("ok").onclick = () => {
   for (const id of selected) if (urlEdits.has(id)) urls[id] = urlEdits.get(id);
   const qids = {}, remember = [];
   for (const sid of selected) { const qi = qInputs.get(sid); if (qi) { qids[sid] = qi.value.trim(); if (rememberBoxes.get(sid)?.checked) remember.push(sid); } }
+  const siteQ = {};
+  for (const sid of selected) { const q = ovOf(sid); if (q) siteQ[sid] = q; }
   const meta = {};
   for (const sid of remember) { const m = metaInputs.get(sid); if (m) meta[sid] = { category: m.ci.value.trim(), language: m.li.value.trim() }; }
-  chrome.runtime.sendMessage({ type: "review-done", id, selected, targets: out, urls, exception: overNow && $("exc").checked, qids, remember, meta, blocked: [...blockedHosts] });
+  chrome.runtime.sendMessage({ type: "review-done", id, selected, targets: out, urls, exception: overNow && $("exc").checked, qids, siteQ, remember, meta, blocked: [...blockedHosts] });
 };
 $("cancel").onclick = () => chrome.runtime.sendMessage({ type: "review-done", id, cancel: true, blocked: [...blockedHosts] });
 addEventListener("keydown", e => { if (e.key === "Escape" && document.activeElement?.tagName !== "INPUT") $("cancel").click(); });

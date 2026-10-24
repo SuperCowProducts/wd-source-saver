@@ -1,4 +1,5 @@
-import { buildCandidates, originsFor, checkUrl, dedupeIds, effectiveMatch, cats, cleanTerm, cleanKeywords, usable, DEFAULTS, normBlockHost,
+import { parseRecipe } from "./create-lib.js";
+import { isYouTubeHost, buildCandidates, originsFor, checkUrl, dedupeIds, effectiveMatch, cats, cleanTerm, cleanKeywords, usable, DEFAULTS, normBlockHost,
   exportSettingsObject, parseSettingsImport, parseSearchScript, langsOf, KINDS, MEDIAWIKI_EXCLUDE } from "./lib.js";
 import { getSites, getSettings, saveAll, getFileLink, setFileLink, updateFileLink, clearFileLink, readDataFile, writeDataFile, filePermission, saveState, pushToFile } from "./store.js";
 
@@ -8,7 +9,7 @@ let sites = [], idx = -1, settings = { ...DEFAULTS };
 // ---------- website editor (one at a time) ----------
 const FIELDS = [
   ["name", "f_name"], ["qid", "f_qid"], ["idProperty", "f_idprop"], ["category", "f_category"],
-  ["templates", "f_templates", "lines"], ["plurals", "f_plurals", "bool"], ["archive", "f_archive", "bool"],
+  ["templates", "f_templates", "lines"], ["createItem", "f_create", "lines"], ["plurals", "f_plurals", "bool"], ["archive", "f_archive", "bool"],
   ["separator", "f_sep", "sepset", "hyphen"], ["caseMode", "f_case", "text", "lower"], ["urlMode", "f_mode", "text", "nohash"],
   ["searchUrl", "f_searchUrl"], ["searchMode", "f_searchMode", "text", "fetch"], ["pickBy", "f_pickBy", "text", "title"],
   ["titleMatch", "f_titleMatch", "text", "equal"], ["approvePartial", "f_approvePartial", "bool"], ["language", "f_language"], ["searchScript", "f_searchScript"], ["searchMax", "f_searchMax"], ["searchRegex", "f_searchRegex"], ["searchExclude", "f_searchExclude"],
@@ -16,7 +17,7 @@ const FIELDS = [
 ];
 
 const siteLabel = s => {
-  const incomplete = !usable({ ...s, templates: s.templates || [] }) || !(s.match || (s.templates || []).length || s.searchUrl);
+  const incomplete = (!usable({ ...s, templates: s.templates || [] }) && !(s.createItem || []).length) || !(s.match || (s.templates || []).length || s.searchUrl);   // a website that only creates items needs no website item
   const c = cats(s).join(", ");
   return `${s.name || effectiveMatch({ ...s, templates: s.templates || [] }) || s.qid || s.idProperty || "(new website)"}${c ? "  ·  " + c : ""}${incomplete ? "  ⚠ incomplete" : ""}`;
 };
@@ -71,7 +72,15 @@ function loadEditor() {
     else if (type === "lines") el.value = (v || []).join("\n");
     else el.value = v ?? def ?? "";
   }
+  showCreateHint();
 }
+function showCreateHint() {                                           // the recipe is checked while you type
+  const r = parseRecipe($("f_create").value), h = $("createHint");
+  h.style.color = r.errors.length ? "#c62828" : "";
+  h.textContent = r.errors.length ? "⚠ " + r.errors[0] + (r.errors.length > 1 ? ` (+${r.errors.length - 1} more)` : "")
+    : r.rows.length ? (r.rows.some(x => x.kind === "label") ? `✓ ${r.rows.length} line${r.rows.length > 1 ? "s" : ""}` : "⚠ no label line yet (label ##selector)") : "";
+}
+$("f_create").addEventListener("input", showCreateHint);
 
 function readField([key, id, type, def]) {
   const el = $(id);
@@ -133,6 +142,7 @@ function normalizeSite(s) {
   o.qid = ((s.qid || "").match(/Q\d+/i) || [""])[0].toUpperCase();
   o.idProperty = ((s.idProperty || "").match(/P\d+/i) || [""])[0].toUpperCase();
   o.templates = (s.templates || []).map(t => t.trim()).filter(Boolean);
+  o.createItem = (s.createItem || []).map(t => String(t).trim()).filter(Boolean);
   for (const k of ["name", "category", "match", "notFound", "nonLetter", "smallWords", "searchUrl", "searchRegex", "searchExclude", "idValue"]) o[k] = (s[k] || "").trim();
   o.searchMax = Number(s.searchMax) > 0 ? Number(s.searchMax) : "";
   o.searchScript = (s.searchScript || "").trim();
@@ -592,10 +602,11 @@ for (const [kind, k] of Object.entries(KINDS)) {
   }
   if (pendingList.length > 1) $("prefillNote").textContent = `${pendingList.length} websites were pre-filled (${pendingList.map(p => p.name || p.qid).join(", ")}). Check the category of each, then press “Save all”.`;
   const add = pendingList.length ? null : new URLSearchParams(location.search).get("add");
-  if (add && !sites.some(s => effectiveMatch({ ...s, templates: s.templates || [] }) === add)) sites.push({ match: add });
+  if (add && !sites.some(s => effectiveMatch({ ...s, templates: s.templates || [] }) === add)) sites.push(isYouTubeHost(add) ? {} : { match: add });   // never prefill "youtube.com": a website with that domain would take over every YouTube link
   if (!pendingList.length) { idx = add ? sites.length - 1 : (sites.length ? 0 : -1); renderSelect(); if (idx >= 0) loadEditor(); }
   if (add) $("f_qid").focus();
   const cmds = await chrome.commands.getAll();
   $("shortcut").textContent = cmds.find(c => c.name === "save-source")?.shortcut || "(no shortcut set)";
+  $("createShortcut").textContent = cmds.find(c => c.name === "create-item")?.shortcut || "“create item” shortcut (not set yet – assign one at chrome://extensions/shortcuts)";
   showStats(); showLastRun(); refreshPerm(); refreshFileUi();
 })();

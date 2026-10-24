@@ -272,6 +272,50 @@ A blocked site is left out *before* anything is requested or shown (URL guesses,
 You are still told: the review window shows "Left out because of your block list: example.com (3)", the run report lists every left-out page (`⛔ blocked site …`), and the notification
 says how many results were left out and from which sites (and which sites you just blocked). The list is part of the data file (and of the browser copy).
 
+### Creating a new item from a page
+For a website with a **recipe** (Settings → the website → *Create a new Wikidata item from a page*), open one of its pages and press the **create item** shortcut. Chrome only hands out four default shortcuts and they are taken,
+so assign one once at `chrome://extensions/shortcuts` (Settings shows the current binding). The extension reads the page, shows a draft you can edit, and creates the item **only when you press Create**.
+
+One line per thing to fill in - `label`, `description`, `alias` (add `:de` for another language) or a property `P123` - then where the value comes from:
+```
+label ##.title-text
+P356 ##.tooltip-wrapper > div > .anchor-secondary.anchor > .anchor-text-container > .anchor-text
+P856 {url}
+description =scholarly article
+P31 =Q13442814
+```
+* `##css selector` = the text of the first match (aliases: every match); `##selector @attr` reads an attribute; `{url}` = the page address (the website's URL mode applies), `{id}`, `{title}`; `=text` is fixed text and may contain those tokens.
+  A second line for the same label/description is a fallback if the first finds nothing. The page is read as you see it (JavaScript-built pages work); a selector that matches nothing leaves an empty field to fill in.
+* Values are cleaned and checked against the property: IDs lose their resolver (`https://doi.org/10.1016/j.x` → `10.1016/J.X`, using the property's formatter URL P1630; DOIs are upper-cased) and must fit its format (P1793); URLs need `https://`; items need a `Q…`;
+  monolingual text needs a language. Supported datatypes: external ID, string, URL, item, monolingual text (others are shown, unticked, with the reason).
+* **No duplicates by accident:** before the window opens, the IDs and URLs are searched on Wikidata; existing items are listed and Create stays locked until you tick "create a new item anyway".
+* **Edit everything:** labels, descriptions, aliases, languages and values; untick a statement to leave it out. Optional "also add described at URL (P1343 + P2699)" when the website has a website item (off by default).
+* Created with one `wbeditentity` edit (summary names the page), subject to the same hourly cap and minimum interval as every other edit. Afterwards the new item opens, and **its Q… is in your clipboard** - press the normal "save source" shortcut on a page to add sources to it.
+* The website needs a URL template (or Match) so the page is recognised; a website item is not required. Only websites with a recipe are considered, so a general website entry never takes over.
+
+### YouTube: one video = one row, and never a `youtube.com` website
+* All variations of a video's address are one address: `watch?v=ID`, `&t=30s` / `&t=45` / `&t=1m2s`, `&si=…`, `&feature=…`, `&list=…`, `youtu.be/ID?t=3`, `m.youtube.com`, `/shorts/ID`, `/embed/ID`, `#t=…`.
+  They are merged *before* the review window opens (Google hits, site-search hits, the page you are on, the history, and the statements already on the item - a source that differs only in `&t=` counts as already there).
+  Rows and the saved P2699 URL carry the clean address (`https://www.youtube.com/watch?v=ID`, or `https://youtu.be/ID`); channel, playlist and other pages are left alone.
+  The address of the page *you are on* is saved as it is (your own `&t=` is kept).
+* A YouTube row's **website item** is the channel's item; the box "also add this website to Settings" is not offered for YouTube, and the clipboard definition ("Label (Q…)") and the Settings `?add=` link no longer pre-fill the domain `youtube.com`.
+  A website with that domain would take over every YouTube link. If you saved one earlier, delete that `youtube.com` website in Settings.
+
+### Direct links (no `{id}` / `{path}`)
+A line in a website's **URL templates** without any `{…}` - e.g. `https://www.example.com/about/history` - is a *direct link*: that exact page is the website. There is no ID to read, so it is always saved as
+**P1343 (website item) + P2699 (URL)** with the URL as it is, even when the website has a default ID property. It needs the website item.
+* It matches only that page: `www.`, http/https, a trailing `/`, capitals and a `#fragment` never matter, a `?query` only has to match when the line has one; sub-pages, parent pages and the rest of the website do not match
+  (use *Match* in Advanced for "everything under this address"). Several direct links (and ID templates) can be mixed in one website; an exact direct link wins over a pattern that also matches the page.
+* It is never used to build URLs from a term, but it is recognised on Google hits / site-search results, accepted as a redirect target and as an edited address, and its host is included in the permissions asked on "Save all".
+
+### Overriding the website item of a row
+Every row that is saved as P1343 (+ P2699 / P1651) has a **website item:** box. Empty = the item saved in Settings (shown next to the box); type another `Q…` to save that row under it instead -
+for example an item that is more specific because it stands for one area of the website. The item's name appears next to the box so a typo is easy to spot; an invalid entry turns the box red and disables Save.
+* Rows with the same item share ONE P1343 statement, so rows with different items become separate statements (the Save button shows the split, e.g. `1+1+1`). "same for all rows of this website" copies the item to every row that uses the same saved item.
+* A row that is listed as "already there" under the saved item is NOT there under the one you type: typing an item ticks it for you, and it is compared with the item again before saving (so it is only added when that exact statement is missing).
+* The override applies to this save only; Settings and the website's saved item are not changed. The history log records the row under the item you used. Rows saved in an ID property (no P1343) have no such box.
+* The item is checked against Wikidata only by showing its name; it is not required to be a "website" item.
+
 ### Blocking a YouTube channel (not youtube.com)
 A YouTube video URL holds only the video ID, so on a YouTube video row the review window offers **block channel @handle** instead of "block youtube.com". The channel is read from YouTube's oEmbed
 answer for that video (one small request per video, paced like every other request; the page you are on already gave its handle). The list then holds `youtube.com/@handle` (or `youtube.com/channel/UC…`

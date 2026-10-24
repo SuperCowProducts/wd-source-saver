@@ -82,7 +82,8 @@ Wikidata labels and aliases are never used – only the page's own ID and the ex
     <input id="f_language" placeholder="en"></label>
   <datalist id="cats"></datalist>
   <label>URL templates <span class="hint">– one per line. <code>{id}</code> = the term, <code>{first}</code>/<code>{FIRST}</code> = its first letter, <code>{a|b|c}</code> = try each choice, <code>{path}</code> = an ID that spans several directories (<code>https://www.encyclopedia.com/{path}</code>; read from pages and search results – it can't be guessed from a term).
-      Start a line with a property to save that template's ID with it (<code>P9999 https://…/Enc/{id}.html</code>); if the property stores more than <code>{id}</code>, say so after the property: <code>P10715:{first}/{id} https://…/terms/{first}/{id}.asp</code> stores <code>f/financial-statements</code>; lines without one use the default ID property, or P1343 + P2699 if none; <code>P1343 https://…</code> forces the fallback.</span>
+      Start a line with a property to save that template's ID with it (<code>P9999 https://…/Enc/{id}.html</code>); if the property stores more than <code>{id}</code>, say so after the property: <code>P10715:{first}/{id} https://…/terms/{first}/{id}.asp</code> stores <code>f/financial-statements</code>; lines without one use the default ID property, or P1343 + P2699 if none; <code>P1343 https://…</code> forces the fallback.
+      A line with <b>no <code>{…}</code> at all</b> is a <b>direct link</b> (<code>https://www.example.com/about/history</code>): it matches exactly that page – nothing else on the website – and saves it as P1343 + P2699 with the URL as it is (a <code>?query</code> only has to match if the line has one). It needs the website item above, and is never built from a term.</span>
     <textarea id="f_templates" rows="3" placeholder="https://www.mathwords.com/{first}/{id}.htm"></textarea></label>
   <div class="g3" style="margin-top:8px">
     <fieldset id="f_sep" style="border:1px solid var(--border);border-radius:4px;padding:2px 8px;margin:0">
@@ -122,6 +123,16 @@ Wikidata labels and aliases are never used – only the page's own ID and the ex
       <code>wait 1500</code> · <code>each "A", "B"</code> + indented lines (<code>{x}</code> = value) · <code>#</code> comments. Pasted Playwright lines like <code>get_by_role("button", name="…")</code> and <code>get_by_text("…")</code> also work as click steps.
       Limits per search (Safety &amp; politeness): clicks and seconds.</div>
     <div class="hint">The query is always the item's Wikidata label (never a guessed string). Results can be wrong, so searches always go through the review window.</div>
+  </details>
+
+  <details><summary>Create a new Wikidata item from a page</summary>
+    <p class="hint">Open a page of this website and press <b id="createShortcut">the “create item” shortcut</b> – the extension reads the page, shows a draft you can edit, and creates the item only when you press Create.
+      One line per thing to fill in: <code>label</code> / <code>description</code> / <code>alias</code> (add <code>:de</code> for another language: <code>label:de</code>) or a property (<code>P356</code>), then where the value comes from:
+      <code>##css selector</code> (the text of the first match; <code>##meta[name=citation_title] @content</code> reads an attribute), <code>{url}</code> (the page's address), <code>{id}</code>, <code>{title}</code>, or <code>=fixed text</code> (e.g. <code>P31 =Q13442814</code>).
+      IDs are cleaned up (<code>https://doi.org/10.1/x</code> → <code>10.1/X</code>) and checked against the property's format; a second line for the same label is a fallback; existing items with the same ID are shown before you create a duplicate.
+      Supported datatypes: ID, string, URL, item, monolingual text. The website item is optional for this.</p>
+    <textarea id="f_create" rows="7" spellcheck="false" style="width:100%;box-sizing:border-box;font-family:monospace" placeholder="label ##.title-text&#10;P356 ##.tooltip-wrapper &gt; div &gt; .anchor-secondary.anchor &gt; .anchor-text-container &gt; .anchor-text&#10;P856 {url}&#10;description =scholarly article&#10;P31 =Q13442814"></textarea>
+    <div id="createHint" class="hint"></div>
   </details>
 
   <details><summary>Advanced</summary>

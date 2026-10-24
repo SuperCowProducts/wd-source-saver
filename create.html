@@ -1,0 +1,35 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Create item – Wikidata Source Saver</title>
+<meta name="color-scheme" content="light dark">
+<style>
+  :root{--bg:#fff;--fg:#222;--muted:#666;--border:#c8ccd1;--card:#f8f9fa;--btn:#f1f3f5;--prim:#1565c0;--bad:#c62828;--warn:#b28704}
+  @media (prefers-color-scheme:dark){:root{--bg:#1b1d20;--fg:#e4e6e8;--muted:#9aa0a6;--border:#464b52;--card:#212428;--btn:#2f3338;--prim:#4f8fe0;--bad:#ef5350;--warn:#fbc02d}}
+  body{font:14px system-ui,sans-serif;margin:0;background:var(--bg);color:var(--fg)}
+  header{padding:12px 16px;border-bottom:1px solid var(--border)} h1{font-size:1.1rem;margin:0}
+  main{padding:4px 16px 100px} h2{font-size:.95rem;margin:16px 0 4px}
+  .t{word-break:break-all;font-size:12px;color:var(--muted)}
+  .r{display:flex;gap:6px;align-items:center;margin:4px 0;flex-wrap:wrap}
+  .r input[type=text]{font:inherit;padding:4px 6px;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:var(--fg)}
+  .lang{width:62px} .val{flex:1;min-width:220px} .pid{font-weight:600;min-width:60px}
+  input.bad{border-color:var(--bad);outline:1px solid var(--bad)}
+  .why{font-size:12px;color:var(--bad)} .ok{font-size:12px;color:#2e7d32} .note{font-size:11px;color:var(--muted);margin-left:68px;flex-basis:100%}
+  .tag{font-size:11px;border:1px solid var(--border);border-radius:10px;padding:0 6px;color:var(--muted)}
+  .dups{border:1px solid var(--warn);border-radius:8px;padding:8px 12px;margin:10px 0;background:var(--card)}
+  footer{position:fixed;bottom:0;left:0;right:0;padding:10px 16px;background:var(--bg);border-top:1px solid var(--border);display:flex;flex-wrap:wrap;gap:6px 10px;align-items:center}
+  button{padding:7px 14px;font:inherit;cursor:pointer;border:1px solid var(--border);border-radius:5px;background:var(--btn);color:var(--fg)}
+  button.p{background:var(--prim);border-color:var(--prim);color:#fff} button:disabled{opacity:.5;cursor:not-allowed}
+  button.x,button.add{padding:1px 8px;font-size:12px} a{color:var(--prim)} #msg{color:var(--bad);font-size:12px}
+</style></head>
+<body>
+<header><h1>Create a new Wikidata item</h1><div class="t" id="sub"></div></header>
+<main>
+  <div id="dups" class="dups" hidden></div>
+  <h2>Labels</h2><div id="labels"></div><button class="add" id="addLabel" type="button">+ label</button>
+  <h2>Descriptions</h2><div id="descriptions"></div><button class="add" id="addDescription" type="button">+ description</button>
+  <h2>Aliases</h2><div id="aliases"></div><button class="add" id="addAlias" type="button">+ alias</button>
+  <h2>Statements</h2><div id="statements"></div>
+  <div class="r" id="descRow" hidden><label><input type="checkbox" id="descAt"> also add “described at URL” (P1343 = <span id="descQ"></span>, P2699 = this page’s address)</label></div>
+</main>
+<footer><button class="p" id="create">Create item</button><button id="cancel">Cancel</button><span id="msg"></span></footer>
+<script type="module" src="create.js"></script>
+</body></html>

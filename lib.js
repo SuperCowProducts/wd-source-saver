@@ -28,9 +28,33 @@ export const SEPARATORS = { hyphen: "-", underscore: "_", plus: "+", space: "%20
 export const stripProto = u =>
   String(u || "").trim().replace(/^[a-z][a-z0-9+.-]*:\/\//i, "").replace(/^www\./i, "");
 
+// ---------- YouTube video URLs ----------
+// watch?v=ID&t=30s, watch?v=ID&t=45, …&si=…&feature=…, youtu.be/ID?t=3, m.youtube.com, /shorts/ID, /live/ID, /embed/ID are ONE video.
+export function youtubeVideoId(x) {                                  // URL or string -> the 11-character video ID ("" = not a YouTube video address)
+  let u; try { u = x instanceof URL ? x : new URL(x); } catch { return ""; }
+  const h = u.hostname.toLowerCase().replace(/^(?:www|m|music)\./, "");
+  let id = "";
+  if (h === "youtu.be") id = u.pathname.split("/")[1] || "";
+  else if (h === "youtube.com" || h === "youtube-nocookie.com") {
+    const m = u.pathname.match(/^\/(?:shorts|live|embed|v)\/([^/?#]+)/);
+    id = u.pathname === "/watch" ? (u.searchParams.get("v") || "") : (m ? m[1] : "");
+  }
+  return /^[\w-]{11}$/.test(id) ? id : "";
+}
+export const isYouTubeHost = h => /(^|\.)(youtube\.com|youtu\.be|youtube-nocookie\.com)$/i.test(String(h || ""));
+// start time, playlist position, share/tracking parameters: they change the link, not the video
+const YT_NOISE = /^(t|start|end|time_continue|si|feature|pp|ab_channel|list|index|app|fbclid|gclid|utm_.*)$/i;
+export function cleanYouTubeUrl(url) {
+  let u; try { u = new URL(url); } catch { return url; }
+  if (!youtubeVideoId(u)) return url;
+  for (const k of [...u.searchParams.keys()]) if (YT_NOISE.test(k)) u.searchParams.delete(k);
+  u.hash = "";
+  return u.toString();
+}
 export function normUrl(u) {
   try {
     const x = new URL(u);
+    const yt = youtubeVideoId(x); if (yt) return "youtube.com/watch?v=" + yt;                 // every variation of one video is the same address
     return x.hostname.toLowerCase().replace(/^www\./, "") + x.pathname.replace(/\/+$/, "") + x.search + x.hash;
   } catch { return String(u).trim(); }
 }
@@ -62,11 +86,17 @@ export const sharesCat = (a, b) => { const cb = cats(b); return (Array.isArray(a
 //   https://www.econlib.org/library/Topics/{a|b}/{id}.html   -> site's default property if set, else P1343 + P2699
 //   P1343 https://…/{id}.html                                -> force the P1343 + P2699 fallback
 const PFX = /^\s*(P\d+)(?::(\S+))?\s+(?=\S)/i;   // P10715  |  P10715:{first}/{id}
+// A DIRECT LINK: a template line without any {…}, e.g. https://www.example.com/about/history. It has no ID: it matches exactly that page
+// (a query string only when the line has one; #fragment, www., http/https and a trailing / never matter) and is saved as P1343 + P2699 with the URL as it is.
+const DIRECT = /^(?:https?:\/\/)?[a-z0-9-]+(?:\.[a-z0-9-]+)+(?:[/?#]\S*)?$/i;
+export const isDirectTemplate = t => !/[{}\s]/.test(String(t || "").trim()) && DIRECT.test(String(t || "").trim());
 export function parseTemplates(site) {
   return (site.templates || []).map(l => String(l).trim()).filter(Boolean).map(l => {
     const m = l.match(PFX);
-    return { tpl: m ? l.slice(m[0].length).trim() : l, prop: m ? m[1].toUpperCase() : null, val: m?.[2] || null };
-  }).filter(x => x.tpl.includes("{id}") || x.tpl.includes("{path}"));
+    const tpl = m ? l.slice(m[0].length).trim() : l;
+    if (isDirectTemplate(tpl)) return { tpl, prop: null, val: null, direct: true };   // no ID: a property prefix would have nothing to store
+    return { tpl, prop: m ? m[1].toUpperCase() : null, val: m?.[2] || null };
+  }).filter(x => x.direct || x.tpl.includes("{id}") || x.tpl.includes("{path}"));
 }
 // templates whose URL can be BUILT from a term ({path} IDs have unknown directories, so they are only ever read)
 export const buildableTemplates = site => parseTemplates(site).filter(x => x.tpl.includes("{id}") && !x.tpl.includes("{path}")).map(x => x.tpl);
@@ -86,6 +116,7 @@ export function fillValue(pattern, { raw, first }) {
 // property that stores the ID for this template ("" = fall back to P1343 + P2699)
 export function templateProp(site, tpl) {
   const t = parseTemplates(site).find(x => x.tpl === tpl);
+  if (t?.direct) return "";                                          // a direct link has no ID to store: always P1343 + P2699
   const p = t && t.prop !== null ? t.prop : siteDefaultProp(site);
   return p === "P1343" ? "" : p;
 }
@@ -166,8 +197,8 @@ function templateRegex(tpl) {
 export function effectiveMatch(site) {
   let m = (site.match || "").trim();
   if (!m) {
-    const t = cleanTemplates(site)[0];
-    if (t) m = stripProto(t).split(PH)[0].split("?")[0].replace(/\/$/, "");
+    const pts = parseTemplates(site), t = (pts.find(x => !x.direct) || pts[0])?.tpl;
+    if (t) m = isDirectTemplate(t) ? stripProto(t).split(/[/?#]/)[0] : stripProto(t).split(PH)[0].split("?")[0].replace(/\/$/, "");     // a direct link only names the website (it matches that page alone)
     else if (site.searchUrl) {
       let dec = site.searchUrl.replace(/\+/g, " ");
       try { dec = decodeURIComponent(dec); } catch { /* keep */ }
@@ -317,6 +348,10 @@ export function matchTemplates(site, urlStr) {
   for (const tpl of cleanTemplates(site)) {
     const { re, hasQuery, names, multi, choiceDefs } = templateRegex(tpl);
     const m = (hasQuery ? path + u.search : path).match(re);
+    if (m && isDirectTemplate(tpl)) {                                // a direct link: this very page, no ID (an exact link beats every pattern)
+      if (!best || !best.direct) best = { score: 1e4 + tpl.length, template: tpl, direct: true, raw: "", slug: "", multi: false, sep: "none", choices: [], prop: "", words: [], value: "" };
+      continue;
+    }
     if (m && (!best || tpl.length > best.score)) {
       let idEnc = m[names.indexOf("id") + 1];
       if (multi) idEnc = idEnc.replace(/\/+$/, "");
@@ -351,13 +386,14 @@ export function findCurrent(sites, tabUrl) {
     const m = matchTemplates(site, tabUrl);
     if (m && (!best || m.score > best.score)) best = { site, score: m.score, extracted: m };
   }
-  if (best) return { site: best.site, extracted: best.extracted };
+  if (best) return best.extracted.direct ? { site: best.site, extracted: null, direct: true } : { site: best.site, extracted: best.extracted };
 
   let bs = null, bl = -1;
   const hp = path.toLowerCase();
   for (const site of sites) {
     const m = effectiveMatch(site);
     if (!usable(site) || !m) continue;
+    if (!(site.match || "").trim() && parseTemplates(site).length && parseTemplates(site).every(x => x.direct)) continue;   // only direct links: they match their own page, not the whole website
     const ok = m.includes("/") ? hp.startsWith(m) : (host === m || host.endsWith("." + m));
     if (ok && m.length > bl) { bs = site; bl = m.length; }
   }
@@ -735,7 +771,7 @@ export function googleHits(links) {
     u.hash = "";
     const k = normUrl(u.href), text = String(l.text || "").replace(/\s+/g, " ").trim();
     const old = out.get(k);
-    if (!old) out.set(k, { url: u.href, text });
+    if (!old) out.set(k, { url: cleanYouTubeUrl(u.href), text });
     else if (text.length > old.text.length) old.text = text;
   }
   return [...out.values()];

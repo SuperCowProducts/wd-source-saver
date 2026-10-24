@@ -1,11 +1,12 @@
 import {
   normUrl, findCurrent, buildCandidates, dedupeIds, parseClipboard, checkUrl, unwrapArchive, waybackLatest,
-  tsToDate, cleanTerm, alignToTerms, segmentWords, cats, catsFor, sharesCat, usable, scraperFor, pageIdPatterns, pageHtmlInPage, pageValueFor, googleHits, googleVerbatimUrl, cleanKeywords, originsFor, googleScript, blockedHost, normBlockHost, blockedChannel, isYouTubeVideoUrl, channelKeyFromAuthorUrl, youtubeChannelKey, channelLabel, wordVariants, searchUrl, extractLinks, pickResultsDetailed, parseSearchScript, pageOp, langsOf, termsForSite, KINDS, resolveArchiveUrl, redirectProblem, robotCheckInPage, looksLikeRobotCheckHtml, textFragmentFor,
+  tsToDate, cleanTerm, alignToTerms, segmentWords, cats, catsFor, sharesCat, usable, scraperFor, pageIdPatterns, pageHtmlInPage, pageValueFor, googleHits, googleVerbatimUrl, cleanKeywords, originsFor, googleScript, blockedHost, normBlockHost, cleanYouTubeUrl, isYouTubeHost, blockedChannel, isYouTubeVideoUrl, channelKeyFromAuthorUrl, youtubeChannelKey, channelLabel, wordVariants, searchUrl, extractLinks, pickResultsDetailed, parseSearchScript, pageOp, langsOf, termsForSite, KINDS, resolveArchiveUrl, redirectProblem, robotCheckInPage, looksLikeRobotCheckHtml, textFragmentFor,
   parseSiteClipboard, formatterTemplate, usableValues,
   matchTemplates, keyFor, applyUrlMode, propForUrl, siteDefaultProp,
   DEFAULTS
 } from "./lib.js";
 import { getSites, getSettings, saveState, addSites } from "./store.js";
+import { parseRecipe, readCreateSpecsInPage, fillTokens, buildDraft, buildItemData, draftProblem, makeValue, claimFor } from "./create-lib.js";
 
 const VERSION = chrome.runtime.getManifest?.().version || "dev";
 const API = "https://www.wikidata.org/w/api.php";
@@ -384,8 +385,8 @@ export function groupCounts(items) {
   return [...m.values()];
 }
 
-// ONE edit containing every chosen change, after waiting for the edit-rate limits.
-async function commit(item, plan, chosen, s, signal) {
+// the edit-rate limits (Settings → Safety & politeness): wait for the minimum interval, refuse above the hourly cap; recordEdit() after the write
+async function waitEditSlot(s, signal) {
   const now0 = Date.now();
   const { editTimes = [], lastEdit = 0 } = await chrome.storage.local.get(["editTimes", "lastEdit"]);
   const recent = editTimes.filter(t => now0 - t < 3600e3);
@@ -398,6 +399,16 @@ async function commit(item, plan, chosen, s, signal) {
     await sleep(1000, signal);
   }
   signal.throwIfAborted();
+  return recent;
+}
+async function recordEdit(recent) {
+  const t = Date.now();
+  await chrome.storage.local.set({ lastEdit: t, editTimes: [...recent, t] });
+}
+
+// ONE edit containing every chosen change, after waiting for the edit-rate limits.
+async function commit(item, plan, chosen, s, signal) {
+  const recent = await waitEditSlot(s, signal);
 
   const claims = [], mods = new Map(), groups = new Map();
   for (const p of chosen) {
@@ -439,9 +450,8 @@ async function commit(item, plan, chosen, s, signal) {
       setStage("saving to Wikidata (maxlag off, this time only)…");
     }
   }
-  const t = Date.now();
   dlog("EDIT", "saved");
-  await chrome.storage.local.set({ lastEdit: t, editTimes: [...recent, t] });
+  await recordEdit(recent);
 }
 
 // A URL typed into the review window. -> {url, prop, value} or {why}
@@ -583,7 +593,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, send) => {
     const r = reviews.get(msg.id);
     if (r && Array.isArray(msg.blocked) && msg.blocked.length) addBlockedSites(msg.blocked, r.owner);          // "block this site" in the window counts on Save AND Cancel
     // the review window also sends {selected, targets}: which rows, and which item/lexeme each one goes to
-    if (r) { reviews.delete(msg.id); r.resolve(msg.cancel ? null : msg.targets ? { selected: msg.selected || [], targets: msg.targets, urls: msg.urls || {}, exception: !!msg.exception, qids: msg.qids || {}, remember: msg.remember || [], meta: msg.meta || {} } : msg.selected || []); if (r.winId) chrome.windows.remove(r.winId).catch(() => {}); }
+    if (r) { reviews.delete(msg.id); r.resolve(msg.cancel ? null : msg.targets ? { selected: msg.selected || [], targets: msg.targets, urls: msg.urls || {}, exception: !!msg.exception, qids: msg.qids || {}, siteQ: msg.siteQ || {}, remember: msg.remember || [], meta: msg.meta || {} } : msg.selected || []); if (r.winId) chrome.windows.remove(r.winId).catch(() => {}); }
     return;
   }
   if (msg?.type === "check-url") {                       // review window: is the URL typed into a row usable? (and what ID does it hold?)
@@ -633,6 +643,10 @@ async function ensureOffscreen() {
 async function readClipboard() {
   await ensureOffscreen();
   return chrome.runtime.sendMessage({ target: "offscreen", type: "read-clipboard" });
+}
+async function writeClipboard(text) {                                // the new item's Q… -> clipboard, ready for the next "save source" shortcut
+  await ensureOffscreen();
+  return chrome.runtime.sendMessage({ target: "offscreen", type: "write-clipboard", text });
 }
 // ID of a website that only shows it inside the page: html -> {value, from} | {value:"", bad, hints}
 async function readPageId(html, specs) {
@@ -921,7 +935,7 @@ const entryKey = e => keyFor(e.site, e.url, e.value, e.property);
 function describe(e) {
   const main = e.property ? `${e.label} (${e.property}: ${e.value})` : `${e.label} – ${e.url}${e.idQual ? ` (${e.idQual.prop}: ${e.idQual.value})` : ""}`;
   return main + (e.archive ? ` + archive ${e.archive.date}` : e.archiveWanted ? " (no Wayback snapshot found)" : "") +
-    (e.viaArchive ? " [live site unreachable]" : "") + (e.viaSearch ? " [from site search]" : "") + (e.needsApproval ? " [partial title match – needs approval]" : "");
+    (e.siteOverride ? ` [website item ${e.siteOverride}]` : "") + (e.viaArchive ? " [live site unreachable]" : "") + (e.viaSearch ? " [from site search]" : "") + (e.needsApproval ? " [partial title match – needs approval]" : "");
 }
 
 async function mapPool(items, size, fn) {
@@ -967,7 +981,7 @@ async function defineFromClipboard(tab, signal, explicit) {
   let host = ""; try { host = new URL(tab.url).hostname.replace(/^www\./, ""); } catch { /* ignore */ }
   const pending = {
     name: def.label, ...(d.kind === "item" ? { qid: d.id } : { idProperty: d.id }),
-    templates, match: templates.length ? "" : host,                       // with a template the match is derived from it
+    templates, match: templates.length || isYouTubeHost(host) ? "" : host,        // never "youtube.com": it would catch every YouTube link                       // with a template the match is derived from it
     note: `${def.label || d.id} (${d.id})` + (templates.length ? ` · ${def.urls.join(" · ")}` : "") + (def.notes.length ? " · " + def.notes.join("; ") : "")
   };
   dlog("INFO", "website definition from the clipboard", pending);
@@ -1081,7 +1095,7 @@ async function runInner(tab, only, s, signal, configure = false) {
   }
   const entries = [], skipped = [], knownLines = [];
   if (fileState && !fileState.ok) skipped.push({ label: "Website data file", url: "", reason: fileState.msg });
-  const firstProp = cur.extracted ? cur.extracted.prop : (siteDefaultProp(site) === "P1343" ? "" : siteDefaultProp(site));
+  const firstProp = cur.extracted ? cur.extracted.prop : cur.direct ? "" : (siteDefaultProp(site) === "P1343" ? "" : siteDefaultProp(site));   // a direct link has no ID: P1343 + P2699
   // YouTube video page: the source is the CHANNEL's item (the one whose YouTube handle, P11245, is the handle embedded in the page),
   // saved as P1343 + P2699 (the URL holds the video ID). Not found -> the page is saved the way the website is configured.
   // YouTube channels of the videos in this run (cache by video ID): filled from the page you are on, and by oEmbed for videos found on other websites / in Google results
@@ -1216,6 +1230,7 @@ async function runInner(tab, only, s, signal, configure = false) {
 
     // a result page of website x (site search or Google hit): read its ID, look up the archive copy, add it
     const addHit = async (x, pu, extra = {}) => {
+      pu = cleanYouTubeUrl(pu);                                        // …&t=30s, &si=…: one video, one address
       { const bb = blockedBy(pu) || await chanBlocked(pu, signal); if (bb) return noteBlocked(bb, pu); }
       let { prop, value } = propForUrl(x, pu);
       const c = { site: x, url: applyUrlMode(pu, x.urlMode), value, prop };
@@ -1265,7 +1280,7 @@ async function runInner(tab, only, s, signal, configure = false) {
             if (f) await addHit(f.site, h.url, { viaGoogle: true, googleText: h.text, manual: !sharesCat(curCats, f.site) });   // a website you have: ticked – unless it is in another category
             else if (unknownRows.size < 30) {                                                                                     // not one of your websites: you tick it yourself
               let host = ""; try { host = new URL(h.url).hostname.replace(/^www\./, ""); } catch { /* ignore */ }
-              unknownRows.set(900001 + unknownRows.size, { url: h.url, text: h.text, host });
+              unknownRows.set(900001 + unknownRows.size, { url: cleanYouTubeUrl(h.url), text: h.text, host });
             }
           }
         } else {
@@ -1302,7 +1317,8 @@ async function runInner(tab, only, s, signal, configure = false) {
   // --- review (a human decides when there is more than a little, or anything came from a search) ---
   let chosen = fresh, cancelled = false, lift = false;                  // lift: "exception" ticked in the review window -> no per-edit limit for THIS run
   let websiteSave = null;                                              // result of saving the websites added from the review window
-  const uEntries = [], uMoved = [], presentMoved = [], remember = [];                     // uMoved: hits from new websites that were sent to another item/lexeme                                   // Google mode: ticked hits from unknown websites (with the website item you typed), and those to add to Settings
+  const uEntries = [], uMoved = [], presentMoved = [], ovPresent = [], remember = [];                     // uMoved: hits from new websites that were sent to another item/lexeme                                   // Google mode: ticked hits from unknown websites (with the website item you typed), and those to add to Settings
+  const siteOv = new Map();                                            // plan id -> website item typed over the saved one in the review window
   const edits = new Map();                                             // plan id -> URL typed over the found one in the review window
   const targets = new Map();                                           // plan id -> item/lexeme chosen in the review window (default: the main one)
   // partial title matches (site option "approve partial matches") ALWAYS need a human decision, whatever the review setting
@@ -1323,7 +1339,7 @@ async function runInner(tab, only, s, signal, configure = false) {
           : p.status === "archive-added" ? "adds the archive URL to an existing statement"
           : p.status === "qualifier-added" ? "adds the URL to the existing P1343 statement"
           : p.group && !p.lead ? "added under the same new P1343 statement" : "new statement" })).concat([...unknownRows].map(([id, u]) => ({
-        id, label: u.host, text: u.url, gkey: "u" + id, siteq: "", archive: null, archiveUrl: null, url: u.url, viaSearch: true, viaGoogle: true, unknown: true, manual: true, gtext: u.text, yt: isYouTubeVideoUrl(u.url), channel: chanFor(u.url),
+        id, label: u.host, text: u.url, gkey: "u" + id, siteq: "", archive: null, archiveUrl: null, url: u.url, viaSearch: true, viaGoogle: true, unknown: true, manual: true, gtext: u.text, yt: isYouTubeVideoUrl(u.url), ytSite: isYouTubeHost(u.host), channel: chanFor(u.url),
         note: "a website that is not in your settings" }))),
       present: present.map(p => describe(p.entry)), skipped: skipped.length,
       siteDefaults: { category: site.category || "", language: site.language || "" },   // what a website added from the window starts with (overridable per row)
@@ -1358,6 +1374,12 @@ async function runInner(tab, only, s, signal, configure = false) {
       lift = !Array.isArray(sel) && !!sel.exception;
       if (lift) dlog("REVIEW", `exception: the limit of ${s.maxPerEdit} statements per edit is lifted for this run`);
       for (const [k, v] of Object.entries(Array.isArray(sel) ? {} : sel.urls || {})) edits.set(Number(k), String(v));
+      for (const [k, v] of Object.entries(Array.isArray(sel) ? {} : sel.siteQ || {})) {                // website item typed over the saved one (e.g. an item for one area of the website)
+        const q = normEntity(v), row = [...fresh, ...present].find(x => x.id === Number(k));
+        if (q && q[0] === "Q" && row && !row.entry.property && ids.includes(Number(k)) && q !== String(row.entry.site.qid || "").toUpperCase()) siteOv.set(Number(k), q);
+      }
+      for (const p of present) if (ids.includes(p.id) && siteOv.has(p.id) && !targets.get(p.id)) ovPresent.push(p);   // "already there" under the saved item, but not under the one typed: it is new now
+      if (siteOv.size) dlog("REVIEW", "website item overridden", [...siteOv].map(([i, q]) => `row ${i}: ${[...fresh, ...present].find(x => x.id === i)?.entry.site.qid} -> ${q}`));
       if (!Array.isArray(sel)) for (const i of ids) {                  // ticked hits from websites that are not in your settings: they need the website item you typed
         const u = unknownRows.get(i); if (!u) continue;
         const q = normEntity((sel.qids || {})[i]);
@@ -1365,7 +1387,7 @@ async function runInner(tab, only, s, signal, configure = false) {
         const usite = { name: u.host, qid: q, match: u.host };
         const uEntry = { site: usite, url: u.url, label: u.host, archiveWanted: false, archive: null, viaSearch: true, viaGoogle: true };
         if (targets.get(i)) uMoved.push({ id: i, entry: uEntry, status: "created" }); else uEntries.push(uEntry);
-        if ((sel.remember || []).includes(i)) remember.push({ ...usite, category: String(sel.meta?.[i]?.category ?? site.category ?? "").trim(), language: String(sel.meta?.[i]?.language ?? site.language ?? "").trim() });
+        if ((sel.remember || []).includes(i) && !isYouTubeHost(u.host)) remember.push({ ...usite, category: String(sel.meta?.[i]?.category ?? site.category ?? "").trim(), language: String(sel.meta?.[i]?.language ?? site.language ?? "").trim() });
       }
     }
   }
@@ -1377,21 +1399,27 @@ async function runInner(tab, only, s, signal, configure = false) {
   for (const p of [...uMoved, ...presentMoved]) { const T = targets.get(p.id); if (!movedBy.has(T)) movedBy.set(T, []); movedBy.get(T).push(p); }   // new websites sent elsewhere are saved there like any other moved row
   // rows whose URL was edited: rebuild the entry (ID re-read, archive looked up again) and compare with the target again
   const entryOf = new Map();
-  for (const p of [...chosen, ...[...movedBy.values()].flat()]) {
-    if (!edits.has(p.id) || edits.get(p.id) === p.entry.url) continue;
-    setStage("reading the edited address…");
-    const ne = await editedEntry(p, edits.get(p.id), signal);
-    if (ne) { entryOf.set(p.id, ne); dlog("REVIEW", `URL edited: ${p.entry.url} -> ${ne.url}${ne.property ? `  (${ne.property}: ${ne.value})` : ""}`); }
-    else skipped.push({ label: p.entry.label, url: edits.get(p.id), reason: "edited address not usable – the original was kept" });
+  for (const p of [...chosen, ...[...movedBy.values()].flat(), ...ovPresent]) {
+    const urlEdited = edits.has(p.id) && edits.get(p.id) !== p.entry.url, ov = siteOv.get(p.id);
+    if (!urlEdited && !ov) continue;
+    let ne = p.entry;
+    if (urlEdited) {
+      setStage("reading the edited address…");
+      ne = await editedEntry(p, edits.get(p.id), signal);
+      if (ne) dlog("REVIEW", `URL edited: ${p.entry.url} -> ${ne.url}${ne.property ? `  (${ne.property}: ${ne.value})` : ""}`);
+      else { skipped.push({ label: p.entry.label, url: edits.get(p.id), reason: "edited address not usable – the original was kept" }); ne = ov ? p.entry : null; }
+    }
+    if (ne && ov && !ne.property) ne = { ...ne, site: { ...ne.site, qid: ov }, siteOverride: ov };      // the same URL, saved under the website item you typed
+    if (ne) entryOf.set(p.id, ne);
   }
   const entryFor = p => entryOf.get(p.id) || p.entry;
   let editedPresent = [];
   // After a long review the item may have changed (someone else, another run): compare again before writing, so nothing is overwritten or added twice.
   const stale = reviewMs > 60e3 && chosen.length > 0;
   if (stale) dlog("REVIEW", `the window was open ${Math.round(reviewMs / 1000)} s: comparing the ticked rows with the current item before saving`);
-  if (!cancelled && (uEntries.length || stale || chosen.some(p => entryOf.has(p.id)))) {
+  if (!cancelled && (uEntries.length || ovPresent.length || stale || chosen.some(p => entryOf.has(p.id)))) {
     setStage(stale ? "checking the item again after your review…" : "comparing the edited / Google rows with the item on Wikidata…");
-    const planE = await planSources(item, [...chosen.map(entryFor), ...uEntries], signal);
+    const planE = await planSources(item, [...chosen.map(entryFor), ...ovPresent.map(entryFor), ...uEntries], signal);
     editedPresent = planE.filter(p => p.status === "exists");
     chosen = planE.filter(p => p.status !== "exists");
   }
@@ -1499,7 +1527,109 @@ async function runInner(tab, only, s, signal, configure = false) {
   return { kind: "nothing", message: msg || "No matching pages were found on the related websites." };
 }
 
-export async function run(tab, { only = false, configure = false } = {}) {
+
+// ======================================================================
+// create a new item from the page (Settings → website → "Create a new Wikidata item")
+// ======================================================================
+// datatype, label, formatter URL (P1630) and format regex (P1793) of the properties used by the recipe: Map P… -> info | (missing = not found)
+async function fetchPropInfo(props, lang, signal) {
+  const out = new Map();
+  if (!props.length) return out;
+  const d = await api({ action: "wbgetentities", ids: props.join("|"), props: "datatype|labels|claims", languages: lang, languagefallback: "1" }, false, signal);
+  for (const p of props) {
+    const e = d.entities?.[p];
+    if (!e || e.missing !== undefined || !e.datatype) continue;
+    const first = pr => e.claims?.[pr]?.find(c => c.rank !== "deprecated" && c.mainsnak?.datavalue)?.mainsnak.datavalue.value;
+    out.set(p, { datatype: e.datatype, label: e.labels?.[lang]?.value || Object.values(e.labels || {})[0]?.value || "",
+      formatter: typeof first("P1630") === "string" ? first("P1630") : "", regex: typeof first("P1793") === "string" ? first("P1793") : "" });
+  }
+  return out;
+}
+// items that already have prop = value ("create anyway" is the user's call)
+async function findItemsWith(prop, value, signal, caseVariants = false) {      // IDs are sometimes stored in another case; URLs never are
+  for (const v of caseVariants ? [...new Set([value, value.toUpperCase(), value.toLowerCase()])] : [value]) {
+    const d = await api({ action: "query", list: "search", srsearch: `haswbstatement:"${prop}=${v.replace(/"/g, "")}"`, srnamespace: 0, srlimit: 5 }, false, signal);
+    const items = (d.query?.search || []).map(x => x.title).filter(t => /^Q\d+$/.test(t));
+    if (items.length) return items;
+  }
+  return [];
+}
+
+async function createFromPage(tab, s, signal) {
+  if (!tab?.url || !/^https?:/.test(tab.url)) throw new RunError("This page can't be used (not an http/https page).", "page");
+  if (unwrapArchive(tab.url)) throw new RunError("This is a web-archive copy. Open the original page to create an item from it.", "page");
+  const href = tab.url, host = new URL(href).hostname.replace(/^www\./, "");
+  const sites = (await getSites()).filter(x => parseRecipe(x.createItem).rows.length || parseRecipe(x.createItem).errors.length);
+  const cand = sites.map(x => x.qid ? x : { ...x, qid: "Q0" });         // a recipe works without a website item (only the matching needs one)
+  const cur = findCurrent(cand, href);
+  if (!cur) throw new RunError(`No “Create item” recipe for ${host}. In Settings, open the website and fill in “Create a new Wikidata item from a page”.`, "config");
+  const site = sites[cand.indexOf(cur.site)];
+  const { rows, errors } = parseRecipe(site.createItem);
+  if (errors.length) throw new RunError(`The “Create item” recipe of ${labelOf(site)} has a problem: ${errors[0]}`, "config");
+  if (!rows.some(r => r.kind === "label")) throw new RunError(`The “Create item” recipe of ${labelOf(site)} has no label line (label ##selector).`, "config");
+  const defLang = langsOf(site)[0] || s.labelLang || "en";
+  const pageUrl = applyUrlMode(href, site.urlMode || "nohash");
+
+  setStage("reading the page…");
+  const specs = rows.map((r, i) => r.src.type === "css" ? { i, sel: r.src.sel, attr: r.src.attr, all: r.kind === "alias" } : null).filter(Boolean);
+  let read;
+  try { [{ result: read } = {}] = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: readCreateSpecsInPage, args: [specs] }); }
+  catch (e) { throw new RunError(`Couldn't read this page: ${e.message}`, "page"); }
+  if (!read) throw new RunError("Couldn't read this page.", "page");
+  signal.throwIfAborted();
+  dlog("INFO", `create item: ${labelOf(site)}`, { url: pageUrl, found: Object.fromEntries(Object.entries(read.results).map(([i, r]) => [rows[i].line, r.values])) }, 4000);
+
+  setStage("checking the properties…");
+  const props = [...new Set(rows.filter(r => r.kind === "prop").map(r => r.prop))];
+  const infos = await fetchPropInfo(props, s.labelLang || "en", signal);
+  let id = ""; try { id = decodeURIComponent(cur.extracted?.raw || ""); } catch { id = cur.extracted?.raw || ""; }
+  const draft = buildDraft(rows, read, { url: pageUrl, id, title: read.title }, infos, defLang);
+
+  setStage("looking for an existing item…");
+  const dups = [];
+  for (const st of draft.statements.filter(x => x.ok && ["external-id", "url"].includes(x.info?.datatype)).slice(0, 4)) {
+    const items = await findItemsWith(st.prop, makeValue(st.prop, st.info, st.value, st.lang).value, signal, st.info.datatype === "external-id").catch(e => { if (signal.aborted) throw e; return []; });
+    if (items.length) dups.push({ prop: st.prop, value: st.value, items: await Promise.all(items.map(async q => ({ id: q, label: await entityLabel(q).catch(() => "") }))) });
+  }
+  signal.throwIfAborted();
+
+  setStage("waiting for your review…");
+  const answer = await askReview({ kind: "create", site: labelOf(site), url: pageUrl, defLang, ...draft, dups,
+    describedAt: site.qid ? site.qid.toUpperCase() : "" }, "create.html", [780, 760]);
+  signal.throwIfAborted();
+  if (!answer) return { kind: "cancelled", message: "Nothing was created." };
+
+  // re-check everything the window sent (it is only a form) and build the edit
+  const problem = draftProblem(answer);
+  if (problem) throw new RunError(`Nothing was created: ${problem}.`, "error");
+  const claims = [];
+  for (const st of answer.statements || []) {
+    const mv = makeValue(st.prop, infos.get(st.prop) || null, st.value, st.lang);
+    if (!mv.ok) throw new RunError(`Nothing was created: ${st.prop} – ${mv.why}.`, "error");
+    claims.push(claimFor(st.prop, mv.datavalue));
+  }
+  if (answer.describedAt && site.qid) claims.push(newClaim({ site, url: pageUrl }));
+  const data = buildItemData({ labels: answer.labels, descriptions: answer.descriptions, aliases: answer.aliases, claims });
+  dlog("EDIT", "creating a new item", data, 8000);
+
+  const recent = await waitEditSlot(s, signal);
+  setStage("creating the item…");
+  const token = await getCsrf(signal);
+  signal.throwIfAborted();
+  const label = answer.labels.find(x => x.value)?.value || "";
+  const d = await api({ action: "wbeditentity", new: "item", data: JSON.stringify(data), token,
+    summary: `Create item from ${pageUrl} (via Wikidata Source Saver, user-initiated)` }, true, undefined, signal);
+  const qid = d.entity?.id;
+  if (!qid) throw new RunError("Wikidata did not return the new item's ID. Check your contributions before trying again.", "api");
+  await recordEdit(recent);
+  dlog("EDIT", `created ${qid}`);
+  if (current) current.item = qid;
+  await writeClipboard(qid).catch(e => dlog("WARN", "clipboard write failed: " + (e.message || e)));
+  chrome.tabs.create({ url: "https://www.wikidata.org/wiki/" + qid }).catch(() => {});
+  return { kind: "ok", badge: "NEW", title: `Created ${qid}`, message: `${label}\n${qid} is in your clipboard – press the “save source” shortcut on a page to add sources to it.` };
+}
+
+export async function run(tab, { only = false, configure = false, create = false } = {}) {
   if (current) return; // a run is already in progress: ignore (the lock is taken synchronously, before any await)
   current = { abort: new AbortController(), stage: "starting…", done: 0, total: 0, dot: 0, startedAt: Date.now(),
     settings: DEFAULTS, blocked: new Set(), strikes: new Map(), log: [], t0: Date.now(), item: "" };
@@ -1513,7 +1643,7 @@ export async function run(tab, { only = false, configure = false } = {}) {
     dlog("INFO", "settings", { ...mine.settings, username: mine.settings.username ? "(set)" : "" });
     if (!tab) [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     signal.throwIfAborted();
-    outcome = await runInner(tab, only, mine.settings, signal, configure);
+    outcome = create ? await createFromPage(tab, mine.settings, signal) : await runInner(tab, only, mine.settings, signal, configure);
   } catch (e) {
     dlog("ERROR", e?.stack || String(e));
     const kind = signal.aborted ? "stopped" : classify(e);
@@ -1530,8 +1660,8 @@ export async function run(tab, { only = false, configure = false } = {}) {
 
 chrome.commands.onCommand.addListener(async (cmd, tab) => {
   if (cmd === "stop-run") return stopRun();
-  if (cmd !== "save-source" && cmd !== "save-this-only" && cmd !== "configure-site") return;
-  run(tab, { only: cmd === "save-this-only", configure: cmd === "configure-site" }); // ignored by run() while another run is active
+  if (cmd !== "save-source" && cmd !== "save-this-only" && cmd !== "configure-site" && cmd !== "create-item") return;
+  run(tab, { only: cmd === "save-this-only", configure: cmd === "configure-site", create: cmd === "create-item" }); // ignored by run() while another run is active
 });
 chrome.action.onClicked.addListener(tab => { if (current) stopRun(); else run(tab); });
 

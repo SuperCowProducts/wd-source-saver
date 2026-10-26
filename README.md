@@ -215,7 +215,7 @@ The formatter's `$1` (Wikidata requires it) becomes `{id}` or `{path}`, decided 
 Settings opens with the website filled in but NOT saved: add a category, check the template, press "Save all". If the website is already configured, only the missing templates are added.
 Without a URL on Wikidata the Match field is filled from the page you are on. Preferred-rank values win; deprecated ones are ignored; at most three URLs are used.
 A bare `Q123` on an unknown page is still treated as the item to save on (settings open with just the host). To pre-fill from a bare item (or from any page, known or not) use the
-"configure a website" shortcut (Alt+Shift+C). "Label (Q123)" pasted from a heading also works as the item to save on, on configured pages.
+"configure a website" shortcut (no default key since 2.29.1 – assign one at `chrome://extensions/shortcuts`). "Label (Q123)" pasted from a heading also works as the item to save on, on configured pages.
 
 ## IDs that are inside the page, not in the URL
 Some websites put the slug in the URL but keep the real ID in the page (e.g. `…/dictionary/automobile_adj`, ID `8269459060` inside). Settings -> website -> Advanced ->
@@ -273,8 +273,10 @@ You are still told: the review window shows "Left out because of your block list
 says how many results were left out and from which sites (and which sites you just blocked). The list is part of the data file (and of the browser copy).
 
 ### Creating a new item from a page
-For a website with a **recipe** (Settings → the website → *Create a new Wikidata item from a page*), open one of its pages and press the **create item** shortcut. Chrome only hands out four default shortcuts and they are taken,
-so assign one once at `chrome://extensions/shortcuts` (Settings shows the current binding). The extension reads the page, shows a draft you can edit, and creates the item **only when you press Create**.
+For a website with a **recipe** (Settings → the website → *Create a new Wikidata item from a page*), open one of its pages and press the **create item** shortcut (default **Alt+Shift+C**, which used to be "configure a website" -
+that one now has no default key: assign one at `chrome://extensions/shortcuts` if you use it), or right-click the page / the toolbar icon → *Create Wikidata item from this page*.
+If a key does nothing: Settings (in that section) shows when the extension last *received* a shortcut or menu action - if it never does, Chrome has the key bound elsewhere (see `chrome://extensions/shortcuts`);
+a shortcut pressed while another run is still active now shows a "still active" notification instead of being ignored silently. The extension reads the page, shows a draft you can edit, and creates the item **only when you press Create**.
 
 One line per thing to fill in - `label`, `description`, `alias` (add `:de` for another language) or a property `P123` - then where the value comes from:
 ```

@@ -981,6 +981,7 @@ export const KINDS = {
   nothing:   { badge: "0",  color: "#9e9e9e", text: "#000000", ms: 6000, label: "Nothing found" },
   checked:   { badge: "3/9", color: "#00796b", text: "#ffffff", ms: 0, label: "Template check finished (exist / checked) – Settings → Test your templates" },
   robot:     { badge: "BOT", color: "#f57c00", text: "#000000", ms: 0, label: "Robot check – solve it in the tab that opened" },
+  busy:      { badge: "…",  color: "#546e7a", text: "#ffffff", ms: 6000, label: "Another run is still active" },
   stopped:   { badge: "■",  color: "#616161", text: "#ffffff", ms: 4000, label: "Stopped" },
   cancelled: { badge: "✗",  color: "#616161", text: "#ffffff", ms: 4000, label: "Cancelled" },
   login:     { badge: "LOG", color: "#6a1b9a", text: "#ffffff", ms: 8000, label: "Not logged in to Wikidata" },

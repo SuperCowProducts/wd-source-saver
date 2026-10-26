@@ -1,11 +1,12 @@
 {
   "manifest_version": 3,
   "name": "Wikidata Source Saver",
-  "version": "2.29.0",
+  "version": "2.29.1",
   "description": "Press a shortcut to add 'described at URL' (P1343 + P2699) to the Wikidata item or lexeme in your clipboard, for configured websites.",
   "permissions": [
     "activeTab",
     "clipboardRead",
+    "contextMenus",
     "notifications",
     "offscreen",
     "scripting",
@@ -49,13 +50,13 @@
       "description": "Stop the current run"
     },
     "create-item": {
-      "description": "Create a new Wikidata item from this page (website recipe in Settings; shortcut: chrome://extensions/shortcuts)"
-    },
-    "configure-site": {
       "suggested_key": {
         "default": "Alt+Shift+C",
         "mac": "Alt+Shift+C"
       },
+      "description": "Create a new Wikidata item from this page (uses the website's recipe in Settings)"
+    },
+    "configure-site": {
       "description": "Configure a website from the item / property in the clipboard (Label (Q123) or Label (P123))"
     }
   },

@@ -607,6 +607,9 @@ for (const [kind, k] of Object.entries(KINDS)) {
   if (add) $("f_qid").focus();
   const cmds = await chrome.commands.getAll();
   $("shortcut").textContent = cmds.find(c => c.name === "save-source")?.shortcut || "(no shortcut set)";
-  $("createShortcut").textContent = cmds.find(c => c.name === "create-item")?.shortcut || "“create item” shortcut (not set yet – assign one at chrome://extensions/shortcuts)";
+  $("createShortcut").textContent = cmds.find(c => c.name === "create-item")?.shortcut || "“create item” shortcut (not set – assign one at chrome://extensions/shortcuts)";
+  const { lastCommand } = await chrome.storage.local.get("lastCommand");                    // proves whether the browser delivers the shortcut to the extension
+  $("createLast").textContent = lastCommand ? `Last shortcut / menu action received by the extension: “${lastCommand.cmd}” at ${new Date(lastCommand.at).toLocaleTimeString()}${lastCommand.busy ? " (ignored: another run was active)" : ""}.`
+    : "No shortcut or menu action has reached the extension yet since it was loaded – if you pressed one, check chrome://extensions/shortcuts for a conflict.";
   showStats(); showLastRun(); refreshPerm(); refreshFileUi();
 })();

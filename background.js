@@ -1658,11 +1658,25 @@ export async function run(tab, { only = false, configure = false, create = false
   notify(outcome);
 }
 
-chrome.commands.onCommand.addListener(async (cmd, tab) => {
+// every way to start something (keyboard shortcut, right-click menu) comes through here
+async function trigger(cmd, tab) {
+  chrome.storage.local.set({ lastCommand: { cmd, at: Date.now(), busy: !!current } }).catch(() => {});     // Settings shows it: "did the browser send my shortcut?"
   if (cmd === "stop-run") return stopRun();
   if (cmd !== "save-source" && cmd !== "save-this-only" && cmd !== "configure-site" && cmd !== "create-item") return;
-  run(tab, { only: cmd === "save-this-only", configure: cmd === "configure-site", create: cmd === "create-item" }); // ignored by run() while another run is active
+  if (current) {                                                      // run() ignores a start while another run is active - say so instead of staying silent
+    notify({ kind: "busy", message: `${current.stage || "working"} – wait for it, or stop it (the stop shortcut, or click the extension icon). Nothing was started.` });
+    return;
+  }
+  run(tab, { only: cmd === "save-this-only", configure: cmd === "configure-site", create: cmd === "create-item" });
+}
+chrome.commands.onCommand.addListener((cmd, tab) => trigger(cmd, tab));
+// right-click menu (page, and the toolbar icon): the same actions without any keyboard shortcut
+chrome.runtime.onInstalled.addListener(() => {
+  chrome.contextMenus?.removeAll(() => {
+    chrome.contextMenus.create({ id: "create-item", title: "Create Wikidata item from this page", contexts: ["page", "action"] });
+  });
 });
+chrome.contextMenus?.onClicked.addListener((info, tab) => { if (info.menuItemId === "create-item") trigger("create-item", tab); });
 chrome.action.onClicked.addListener(tab => { if (current) stopRun(); else run(tab); });
 
 export const _test = { get current() { return current; } };

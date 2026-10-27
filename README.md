@@ -223,6 +223,7 @@ Some websites put the slug in the URL but keep the real ID in the page (e.g. `�
 
     meta NAME [| regex]             <meta name|property|itemprop="NAME" content="…">
     css SELECTOR [@attr] [| regex]  text (or attribute) of the first element matching the selector
+                                    (@href/@src/@link give full addresses)
     jsonld KEY [| regex]            value of KEY anywhere in the page's JSON-LD blocks
     html REGEX   (or just REGEX)    regular expression over the HTML source; group 1 = the ID (no group = whole match)
 
@@ -286,7 +287,7 @@ P856 {url}
 description =scholarly article
 P31 =Q13442814
 ```
-* `##css selector` = the text of the first match (aliases: every match); `##selector @attr` reads an attribute; `{url}` = the page address (the website's URL mode applies), `{id}`, `{title}`; `=text` is fixed text and may contain those tokens.
+* `##css selector` = the text of the first match (aliases: every match); `##selector @attr` reads an attribute (`@href`, `@src` etc. are returned as full addresses, relative links resolved against the page; `@link` (alias `@url`) takes the `href` of the matched element, of the link around it, or of the first link inside it) - e.g. `P953 ##.download-pdf.abs-button @href` on `https://arxiv.org/abs/2101.04676` gives `https://arxiv.org/pdf/2101.04676`, not `View PDF`; `{url}` = the page address (the website's URL mode applies), `{id}`, `{title}`; `=text` is fixed text and may contain those tokens.
   A second line for the same label/description is a fallback if the first finds nothing. The page is read as you see it (JavaScript-built pages work); a selector that matches nothing leaves an empty field to fill in.
 * Values are cleaned and checked against the property: IDs lose their resolver (`https://doi.org/10.1016/j.x` → `10.1016/J.X`, using the property's formatter URL P1630; DOIs are upper-cased) and must fit its format (P1793); URLs need `https://`; items need a `Q…`;
   monolingual text needs a language. Supported datatypes: external ID, string, URL, item, monolingual text (others are shown, unticked, with the reason).

@@ -15,7 +15,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     ta.focus(); ta.select();
     sendResponse(document.execCommand("copy"));
   } else if (msg.type === "page-id") {
-    try { sendResponse(extractPageId(new DOMParser().parseFromString(msg.html || "", "text/html"), msg.html || "", msg.specs)); }
+    try { sendResponse(extractPageId(new DOMParser().parseFromString(msg.html || "", "text/html"), msg.html || "", msg.specs, msg.baseUrl)); }
     catch (e) { sendResponse({ value: "", error: String(e && e.message || e) }); }
   }
 });

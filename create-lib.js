@@ -50,7 +50,19 @@ export function readCreateSpecsInPage(specs) {
   for (const sp of specs || []) {
     try {
       const els = [...document.querySelectorAll(sp.sel)];
-      const vals = els.map(el => clean(sp.attr ? el.getAttribute(sp.attr) : (el.innerText || el.textContent))).filter(Boolean);
+      // @href / @src / @link / @url give the full address (relative links resolved against the page); @link/@url also accept a wrapper around the <a>
+      const LINKY = /^(href|src|action|poster|data|cite|srcset)$/i;
+      const absolute = v => { try { return new URL(v, document.baseURI).href; } catch { return v; } };
+      const attrOf = el => {
+        if (!sp.attr) return el.innerText || el.textContent;
+        if (/^(link|url)$/i.test(sp.attr)) {
+          const a = el.matches("[href]") ? el : (el.closest("a[href]") || el.querySelector("a[href]"));
+          return a ? absolute(a.getAttribute("href")) : "";
+        }
+        const v = el.getAttribute(sp.attr);
+        return v && LINKY.test(sp.attr) && !/^srcset$/i.test(sp.attr) ? absolute(v.trim()) : v;
+      };
+      const vals = els.map(el => clean(attrOf(el))).filter(Boolean);
       results[sp.i] = { values: sp.all ? [...new Set(vals)] : vals.slice(0, 1), matches: els.length };
     } catch (e) { results[sp.i] = { values: [], matches: 0, error: String(e && e.message || e) }; }
   }

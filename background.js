@@ -649,9 +649,9 @@ async function writeClipboard(text) {                                // the new 
   return chrome.runtime.sendMessage({ target: "offscreen", type: "write-clipboard", text });
 }
 // ID of a website that only shows it inside the page: html -> {value, from} | {value:"", bad, hints}
-async function readPageId(html, specs) {
+async function readPageId(html, specs, baseUrl) {
   await ensureOffscreen();
-  return (await chrome.runtime.sendMessage({ target: "offscreen", type: "page-id", html, specs })) || { value: "" };
+  return (await chrome.runtime.sendMessage({ target: "offscreen", type: "page-id", html, specs, baseUrl })) || { value: "" };
 }
 // fetch a page (cookies sent when the website is set to) and read its ID: -> {value, url, why}
 async function fetchPageId(site, url, signal) {
@@ -659,7 +659,7 @@ async function fetchPageId(site, url, signal) {
   const res = await hostFetch(url, { credentials: site.cookies ? "include" : "omit", timeoutMs: 15000, signal });
   if (!res.ok) return { value: "", why: `HTTP ${res.status}` };
   const html = (await res.text()).slice(0, 6e6);
-  const got = await readPageId(html, pageIdPatterns(site));
+  const got = await readPageId(html, pageIdPatterns(site), res.url || url);
   if (!got.value) dlog("WARN", `no "ID from the page" pattern matched ${url}`, { invalid: got.bad, longNumbersOnThePage: got.hints }, 3000);
   return { value: got.value || "", url: res.url || url, why: got.value ? "" : "none of the “ID from the page” patterns matched" };
 }
@@ -711,7 +711,7 @@ async function resolveCandidate(c, s, signal) {
   if (live.found) {
     let value;
     if (c.fromPage) {                                                  // the ID value is inside the page: read it from the page that was just fetched
-      const got = await readPageId(live.html || "", pageIdPatterns(c.site));
+      const got = await readPageId(live.html || "", pageIdPatterns(c.site), live.url);
       if (got.value) value = pageValueFor(c.site, c.template, got.value);
       else dlog("WARN", `no "ID from the page" pattern matched ${live.url}`, { invalid: got.bad, longNumbersOnThePage: got.hints }, 3000);
     }
@@ -1144,7 +1144,7 @@ async function runInner(tab, only, s, signal, configure = false) {
       let got = null;
       try {
         const [r] = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: pageHtmlInPage });
-        got = await readPageId(r?.result || "", idPats);
+        got = await readPageId(r?.result || "", idPats, href);
       } catch (e) { dlog("WARN", `page ID read failed: ${e.message}`); }
       if (got?.value) { entryValue = pageValueFor(site, cur.extracted?.template, got.value); dlog("INFO", `${entryProp} value read from the page: ${got.value} (${got.from})${entryValue !== got.value ? " -> " + entryValue : ""}`); }
       else {

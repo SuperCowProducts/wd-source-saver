@@ -1072,7 +1072,14 @@ export function parsePageIdSpec(line) {
 }
 
 // doc: a parsed Document; html: its source. -> {value, from} or {value:"", bad:[…], hints:[…]} (hints: snippets around long numbers, to help write a pattern)
-export function extractPageId(doc, html, lines) {
+export function extractPageId(doc, html, lines, baseUrl) {
+  // @href / @src / @link / @url resolve relative addresses against the page (baseUrl) when it is known
+  const linkAttr = (el, attr) => {
+    const abs = v => { try { return baseUrl ? new URL(v, baseUrl).href : v; } catch { return v; } };
+    if (/^(link|url)$/i.test(attr)) { const a = el.matches("[href]") ? el : (el.closest("a[href]") || el.querySelector("a[href]")); return a ? abs(a.getAttribute("href")) : ""; }
+    const v = el.getAttribute(attr);
+    return v && /^(href|src|action|poster|data|cite)$/i.test(attr) ? abs(v.trim()) : v;
+  };
   const bad = [];
   const rxOf = src => { try { return new RegExp(src, "i"); } catch { bad.push(src); return null; } };
   const narrow = (v, rx) => {
@@ -1099,7 +1106,7 @@ export function extractPageId(doc, html, lines) {
         v = narrow(el && el.getAttribute("content"), sp.rx);
       } else if (sp.kind === "css") {
         const el = doc.querySelector(sp.arg);
-        v = narrow(el && (sp.attr ? el.getAttribute(sp.attr) : el.textContent), sp.rx);
+        v = narrow(el && (sp.attr ? linkAttr(el, sp.attr) : el.textContent), sp.rx);
       } else if (sp.kind === "jsonld") {
         for (const sc of doc.querySelectorAll('script[type="application/ld+json"]')) {
           let j; try { j = JSON.parse(sc.textContent); } catch { continue; }
